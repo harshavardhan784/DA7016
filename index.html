@@ -22,27 +22,47 @@ body{
 
 
 /* ===== A0 PORTRAIT PRINT SETUP ===== */
+
+/* =========================================================
+   A0 PORTRAIT — FINAL PRINT SETUP
+   Physical page: 841mm × 1189mm
+   ========================================================= */
+
 @page {
-    size: A0 portrait;
+    size: 841mm 1189mm;
     margin: 0;
 }
 
 @media print {
+
     html,
     body {
         width: 841mm;
         height: 1189mm;
         margin: 0;
         padding: 0;
+        background: #fff;
+        overflow: hidden;
+    }
+
+    body {
+        display: block;
     }
 
     .poster {
-        width: 841mm;
-        min-height: 1189mm;
-        margin: 0;
+        /* Keep the original design dimensions */
+        width: 1020px;
+        min-height: 0;
+
+        /* Scale entire poster proportionally to A0 height */
+        zoom: 2.281;
+
+        margin: 0 auto;
+
         box-shadow: none;
     }
 }
+
 /* ── HEADER ── */
 .hdr{background:var(--navy);padding:14px 22px;display:grid;grid-template-columns:1fr auto;align-items:center;gap:20px;border-bottom:3px solid var(--blue2);}
 .hdr-title{font-family:'Source Serif 4',serif;font-size:19px;font-weight:700;color:#fff;line-height:1.2;letter-spacing:-0.01em;}
