@@ -1,0 +1,222 @@
+[
+ {
+  "id": "prompt0",
+  "markup": "<P align=\"left\" heading=\"2\" size=\"13\" bold=\"true\">Section One</P>"
+ },
+ {
+  "id": "prompt1",
+  "markup": "<OPTIONS layout=\"grid\" columns=\"2\">\n<OPTION>option alpha</OPTION>\n<OPTION>option beta</OPTION>\n<OPTION>option gamma</OPTION>\n<OPTION>option delta</OPTION>\n</OPTIONS>"
+ },
+ {
+  "id": "hand0",
+  "markup": "<P align=\"center\" heading=\"1\" size=\"18\" bold=\"true\">COLLEGE OF ENGINEERING</P>"
+ },
+ {
+  "id": "hand1",
+  "markup": "<P>Plain paragraph with &amp; ampersand and &lt;angle&gt; and a $x^2 + y_1$ formula.</P>"
+ },
+ {
+  "id": "hand2",
+  "markup": "<P>First line<BR/>second line<BR/>  third line  </P>"
+ },
+ {
+  "id": "hand3",
+  "markup": "<P>Fill in: <BLANK type=\"underscore\" length=\"20\"/> and <BLANK type=\"dots\" length=\"8\"/>.</P>"
+ },
+ {
+  "id": "hand4",
+  "markup": "<P>Mixed <STYLE bold=\"true\">bold <STYLE italic=\"true\">and italic</STYLE></STYLE> text, H<STYLE subscript=\"true\">2</STYLE>O, x<STYLE superscript=\"true\">2</STYLE>.</P>"
+ },
+ {
+  "id": "hand5",
+  "markup": "<P><STYLE size=\"14\" font=\"Arial\" color=\"#FF0000\" highlight=\"yellow\" underline=\"true\" strike=\"true\">styled</STYLE> end</P>"
+ },
+ {
+  "id": "hand6",
+  "markup": "<P indent_left=\"0.5\" indent_first=\"-0.25\" space_before=\"6\" space_after=\"12\" line_spacing=\"1.5\" align=\"justify\">Spaced paragraph.</P>"
+ },
+ {
+  "id": "hand7",
+  "markup": "<P heading=\"h2\">Heading with h prefix</P>"
+ },
+ {
+  "id": "hand8",
+  "markup": "<P>Question text <RIGHT>[5]</RIGHT></P>"
+ },
+ {
+  "id": "hand9",
+  "markup": "<LIST type=\"number\"><ITEM level=\"0\">1) First<RIGHT>[2]</RIGHT></ITEM><ITEM level=\"1\">(a) nested</ITEM><ITEM level=\"0\">2) Second</ITEM></LIST>"
+ },
+ {
+  "id": "hand10",
+  "markup": "<LIST type=\"none\"><ITEM level=\"1\">indented without label</ITEM></LIST>"
+ },
+ {
+  "id": "hand11",
+  "markup": "<LIST type=\"bullet\"><P>• item as P</P><ITEM size=\"9\" bold=\"true\">• small bold</ITEM></LIST>"
+ },
+ {
+  "id": "hand12",
+  "markup": "<OPTIONS layout=\"vertical\"><OPTION>(a) one</OPTION><OPTION>(b) two</OPTION></OPTIONS>"
+ },
+ {
+  "id": "hand13",
+  "markup": "<OPTIONS layout=\"grid\" columns=\"2\"><OPTION>(a) one</OPTION><OPTION>(b) two</OPTION><OPTION>(c) three</OPTION></OPTIONS>"
+ },
+ {
+  "id": "hand14",
+  "markup": "<QUESTION><P>1. Stem of the question</P><OPTIONS layout=\"grid\" columns=\"2\"><OPTION>(a) x</OPTION><OPTION>(b) y</OPTION></OPTIONS></QUESTION>"
+ },
+ {
+  "id": "hand15",
+  "markup": "<TABLE border=\"1\"><ROW header=\"true\"><CELL>Quantity</CELL><CELL>Symbol</CELL><CELL>Unit</CELL></ROW><ROW><CELL>Current</CELL><CELL>I</CELL><CELL>Ampere</CELL></ROW></TABLE>"
+ },
+ {
+  "id": "hand16",
+  "markup": "<TABLE border=\"1\" align=\"center\"><ROW><CELL colspan=\"2\" align=\"center\" bold=\"true\">Merged heading</CELL></ROW><ROW><CELL>a</CELL><CELL>b</CELL></ROW></TABLE>"
+ },
+ {
+  "id": "hand17",
+  "markup": "<TABLE><ROW><CELL><P align=\"right\">right cell</P><P>second paragraph</P></CELL><CELL size=\"9\">small</CELL></ROW></TABLE>"
+ },
+ {
+  "id": "hand18",
+  "markup": "<TABLE border=\"1\"><ROW><CELL>a</CELL><CELL>b</CELL><CELL>c</CELL></ROW><ROW><CELL>only one</CELL></ROW></TABLE>"
+ },
+ {
+  "id": "hand19",
+  "markup": "<P>First</P>\n<P>Second</P>\n<LIST type=\"number\"><ITEM>1. x</ITEM></LIST>\n<TABLE border=\"1\"><ROW><CELL>t</CELL></ROW></TABLE>"
+ },
+ {
+  "id": "hand20",
+  "markup": "Bare text line one\nbare line two"
+ },
+ {
+  "id": "hand21",
+  "markup": "<STYLE bold=\"true\">bare styled</STYLE> then <BR/> more"
+ },
+ {
+  "id": "hand22",
+  "markup": "<BLOCK id=\"x\"><P>wrapped in a block tag</P></BLOCK>"
+ },
+ {
+  "id": "hand23",
+  "markup": "<P>Unknown <foo> tag stays as text</P>"
+ },
+ {
+  "id": "hand24",
+  "markup": "<P>  leading and   multiple   spaces  </P>"
+ },
+ {
+  "id": "hand25",
+  "markup": "<P>नमस्ते दुनिया — తెలుగు వచనం</P>"
+ },
+ {
+  "id": "hand26",
+  "markup": "<P>Image <IMG bbox=\"0.1,0.1,0.3,0.2\"/> inline and <FORMULA bbox=\"0.4,0.4,0.5,0.5\"/></P>"
+ },
+ {
+  "id": "hand27",
+  "markup": "<P>literal backslash n here\\nand more</P>"
+ },
+ {
+  "id": "hand28",
+  "markup": "<P>explicit off <STYLE bold=\"false\">span</STYLE></P>",
+  "refuse": true
+ },
+ {
+  "id": "hand29",
+  "markup": "<P>nested <P>paragraph</P> inside</P>"
+ },
+ {
+  "id": "hand30",
+  "markup": "<LIST type=\"number\"><ITEM>1. a</ITEM><LIST type=\"bullet\"><ITEM>• nested list</ITEM></LIST></LIST>",
+  "refuse": true
+ },
+ {
+  "id": "hand31",
+  "markup": "<P><RIGHT><STYLE bold=\"true\">formatted</STYLE></RIGHT></P>",
+  "refuse": true
+ },
+ {
+  "id": "hand32",
+  "markup": "<TABLE>no rows here</TABLE>",
+  "refuse": true
+ },
+ {
+  "id": "math0",
+  "markup": "<P align=\"center\">మార్కులు : $5 \\times 5 = 25$</P>"
+ },
+ {
+  "id": "math1",
+  "markup": "<P>Inline $x^2 + y^2 = z^2$ and display $$\\int_0^1 x\\,dx = \\frac{1}{2}$$ done</P>"
+ },
+ {
+  "id": "math2",
+  "markup": "<P>Cost is $5 and $10 today, not a formula</P>"
+ },
+ {
+  "id": "math3",
+  "markup": "<P>\\( a \\neq b \\) and \\[ c \\leq d \\]</P>"
+ },
+ {
+  "id": "math4",
+  "markup": "<P>Escaped \\$ sign then $y$ and \\$ again</P>"
+ },
+ {
+  "id": "math5",
+  "markup": "<LIST type=\"number\"><ITEM>1) Find $a+b$ here<RIGHT>[2]</RIGHT></ITEM><ITEM>2) Solve $x=\\sqrt{2}$<RIGHT>[3]</RIGHT></ITEM></LIST>"
+ },
+ {
+  "id": "math6",
+  "markup": "<TABLE border=\"1\"><ROW header=\"true\"><CELL>$x$</CELL><CELL>$x^2$</CELL></ROW><ROW><CELL>2</CELL><CELL>$4$</CELL></ROW></TABLE>"
+ },
+ {
+  "id": "math7",
+  "markup": "<P>bare latex outside dollars: a \\neq b and 3 \\times 4</P>"
+ },
+ {
+  "id": "math8",
+  "markup": "<P><STYLE bold=\"true\">bold $\\alpha + \\beta$ formula</STYLE> after</P>"
+ },
+ {
+  "id": "cell1",
+  "markup": "<TABLE border=\"1\"><ROW><CELL><P>Q13 assertion text<BR/>reason text</P><OPTIONS layout=\"vertical\"><OPTION>a) one</OPTION><OPTION>b) two</OPTION></OPTIONS><OPTIONS layout=\"vertical\"><OPTION>(a) first</OPTION><OPTION>(b) second</OPTION></OPTIONS></CELL></ROW></TABLE>"
+ },
+ {
+  "id": "cell2",
+  "markup": "<TABLE border=\"1\"><ROW><CELL><OPTIONS layout=\"vertical\"><OPTION>d) only options in this cell</OPTION></OPTIONS></CELL></ROW><ROW><CELL><P>next row</P></CELL></ROW></TABLE>"
+ },
+ {
+  "id": "cell3",
+  "markup": "<TABLE border=\"1\"><ROW><CELL><P>intro</P><LIST type=\"bullet\"><ITEM>• one</ITEM><ITEM>• two</ITEM></LIST></CELL></ROW></TABLE>"
+ },
+ {
+  "id": "cell4",
+  "markup": "<TABLE border=\"1\"><ROW><CELL><P>paragraph</P>stray text beside it</CELL></ROW></TABLE>"
+ },
+ {
+  "id": "cell5",
+  "markup": "<TABLE border=\"1\"><ROW><CELL><OPTIONS layout=\"grid\" columns=\"2\"><OPTION>a) 216</OPTION><OPTION>b) 202</OPTION><OPTION>c) 203</OPTION><OPTION>d) 206</OPTION></OPTIONS></CELL><CELL><P>side</P></CELL></ROW></TABLE>"
+ },
+ {
+  "id": "cell6",
+  "markup": "<TABLE border=\"1\"><ROW><CELL><QUESTION><P>1. stem</P><OPTIONS layout=\"vertical\"><OPTION>(a) x</OPTION></OPTIONS></QUESTION></CELL></ROW></TABLE>"
+ },
+ {
+  "id": "cell7",
+  "markup": "<TABLE border=\"1\"><ROW><CELL><P>outer</P><TABLE border=\"1\"><ROW><CELL>inner</CELL></ROW></TABLE></CELL></ROW></TABLE>"
+ },
+ {
+  "id": "open1",
+  "markup": "<P>Q18 first line\n<P>Q19 second line</P>"
+ },
+ {
+  "id": "open2",
+  "markup": "<TABLE border=\"1\"><ROW><CELL><P>प्रश्न 18 लीग\n<P>प्रश्न 19 संक्रामक रोग क्या हैं?</P></CELL></ROW></TABLE>"
+ },
+ {
+  "id": "cell8",
+  "markup": "<TABLE border=\"1\"><ROW><CELL><P>Assertion (A) text</P><OPTIONS layout=\"vertical\"><OPTION>a) first</OPTION><OPTION>b) second</OPTION></OPTIONS></CELL></ROW><ROW><CELL><TABLE border=\"1\"><ROW><CELL colspan=\"2\"><P align=\"center\" bold=\"true\" size=\"11\">SHORT ANSWER TYPE QUESTIONS<BR/>(3 MARKS EACH)</P></CELL></ROW><ROW><CELL><P>प्रश्न 22 राष्ट्रीय एकता</P></CELL><CELL><P>marks</P></CELL></ROW></TABLE></CELL></ROW></TABLE>"
+ }
+]
