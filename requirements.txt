@@ -1,0 +1,14 @@
+fastapi
+uvicorn
+python-multipart
+pydantic
+google-auth
+requests
+pymupdf
+opencv-python-headless
+python-docx
+pillow
+numpy
+latex2mathml
+mathml2omml
+docling
