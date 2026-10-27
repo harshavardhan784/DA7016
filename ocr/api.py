@@ -13,11 +13,7 @@ from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import store
-from . import auth
-from . import config
-from . import intent
-from . import ops
+from . import auth, config, intent, ops, store
 
 work_q: "queue.Queue[str]" = queue.Queue()
 MAX_MARKUP = 200_000
@@ -81,7 +77,7 @@ class Credential(BaseModel):
 @app.get("/api/config")
 def get_config():
     return {"auth": not config.AUTH_DISABLED, "google_client_id": config.GOOGLE_CLIENT_ID,
-            "max_mb": config.MAX_MB, "max_pages": config.MAX_PAGES}
+            "max_mb": config.MAX_MB}
 
 
 @app.post("/api/auth/google")
@@ -120,13 +116,6 @@ async def upload(file: UploadFile = File(...), u=Depends(user)):
         pages = len(pymupdf.open(stream=data, filetype="pdf"))
     except Exception:
         raise HTTPException(400, "that is not a readable PDF")
-    if pages > config.MAX_PAGES:
-        raise HTTPException(400, f"PDF has {pages} pages; limit is {config.MAX_PAGES}")
-    if config.USER_DAILY_PAGES:
-        since = time.time() - 24 * 3600
-        used = sum(j.get("pages", 0) for j in store.jobs_of(u["sub"]) if j.get("created", 0) >= since)
-        if used + pages > config.USER_DAILY_PAGES:
-            raise HTTPException(429, f"Daily limit: {used} of {config.USER_DAILY_PAGES} pages already used in the last 24 hours, this PDF has {pages}.")
     job_id = store.new_job(u["sub"], u["email"], file.filename or "document.pdf", data, pages)
     work_q.put(job_id)
     return {"job_id": job_id, "pages": pages}
@@ -319,48 +308,74 @@ class Accept(BaseModel):
     blocks: Optional[list[str]] = None        # default: every block in the proposal
 
 
-def _assist_events(job_id, todo):
+def _assist_events(job_id, todo, prop):
     """The edits behind the accepted assistant cards, checked against the document as it is now.
-    Positions and ids of new blocks are worked out here, not when the proposal was made, so earlier changes cannot misplace them."""
+    Positions and ids of new blocks, and every block's context, are worked out here (from the blocks as they are at this moment),
+    not when the proposal was made, so earlier changes cannot misplace them or overwrite each other's context."""
     sim = store.current_blocks(job_id)
     events = []
+
+    def add(ev):
+        nonlocal sim
+        try:
+            sim = store.apply_event(sim, ev)
+        except ValueError as e:
+            raise HTTPException(409, str(e))
+        events.append(ev)
+
     for card in todo:
-        have = {b["block_id"]: (b.get("formatted_text") or "") for b in sim}
+        have = {b["block_id"]: b for b in sim}
         for bid, before in (card.get("expect") or {}).items():
             if bid not in have:
                 raise HTTPException(409, f"{bid} is no longer in the document")
-            if have[bid] != before:
+            if (have[bid].get("formatted_text") or "") != before:
                 raise HTTPException(409, f"{bid} was edited after this proposal was made")
+        eid, asked, said = f"{prop['id']}.{card['id']}", prop.get("note") or "", prop.get("message") or ""
         for ev in card["events"]:
-            if ev["op"] == "add_atoms":                          # a split: the original blocks come back one after another
-                prev = ev["after"]
-                for atom in ev["atoms"]:
-                    ids = [b["block_id"] for b in sim]
-                    if prev not in ids:
-                        raise HTTPException(409, f"{prev} is no longer in the document")
-                    e = {"op": "add_block", "index": ids.index(prev) + 1, "block": {k: v for k, v in atom.items() if k in store.NEW_BLOCK_KEYS}}
-                    try:
-                        sim = store.apply_event(sim, e)
-                    except ValueError as err:
-                        raise HTTPException(409, str(err))
-                    events.append(e)
-                    prev = atom["block_id"]
-                continue
-            if ev["op"] == "insert_after":
-                ids = [b["block_id"] for b in sim]
+            ids = [b["block_id"] for b in sim]
+            have = {b["block_id"]: b for b in sim}
+            if ev["op"] == "set_fields":                         # an edit: the request goes into that block's context
+                entry = ops._entry(eid, asked, said, ops._card_said(card))
+                add({**ev, "fields": {**ev["fields"], "context": ops._ctx_add(have[ev["block"]].get("context"), entry)}})
+            elif ev["op"] == "insert_after":
                 if ev["after"] not in ids:
                     raise HTTPException(409, f"{ev['after']} is no longer in the document")
                 at = ids.index(ev["after"])
                 page = sim[at]["page"]
                 n = 1 + max([int(m.group(1)) for i in ids if (m := re.fullmatch(rf"p{page}_n(\d+)", i))] or [0])
-                ev = {"op": "add_block", "index": at + 1,
-                      "block": {"block_id": f"p{page}_n{n}", "page": page, "bbox_xyxy": None, "bbox_norm": None, "bodhan_type": ev["type"],
-                                "is_picture": False, "image_path": None, "formatted_text": ev["markup"]}}
-            try:
-                sim = store.apply_event(sim, ev)
-            except ValueError as e:
-                raise HTTPException(409, str(e))
-            events.append(ev)
+                add({"op": "add_block", "index": at + 1,
+                     "block": {"block_id": f"p{page}_n{n}", "page": page, "bbox_xyxy": None, "bbox_norm": None, "bodhan_type": ev["type"],
+                               "is_picture": False, "image_path": None, "formatted_text": ev["markup"],
+                               "context": [ops._entry(eid, asked, said, ops._card_said(card))]}})
+            elif ev["op"] == "merge_blocks":                     # one new block (a new id, a box around the pieces) takes the place of the pieces
+                srcs = [have[i] for i in ev["ids"]]
+                new_id = ops._merged_id(ids, srcs[0]["page"], [a for s in srcs for a in ops._atom_ids(s)])
+                entry = ops._entry(eid, asked, said, ops._card_said(card, new_id))
+                block = {k: v for k, v in srcs[0].items() if k in store.NEW_BLOCK_KEYS}
+                block.update(ev["fields"])
+                block.update(block_id=new_id, merged_from=[a for s in srcs for a in ops._atoms_with_context(s, entry)],
+                             context=ops._ctx_join(*[s.get("context") for s in srcs], [entry]))
+                add({"op": "add_block", "index": ids.index(ev["ids"][0]), "block": block})
+                add({"op": "delete", "blocks": list(ev["ids"])})
+            elif ev["op"] == "split_block":                      # the original blocks come back, each with its own context (and what happened since)
+                host = have.get(ev["id"])
+                atoms = (host or {}).get("merged_from") or []
+                if len(atoms) < 2:
+                    raise HTTPException(409, f"{ev['id']} is no longer a merged block")
+                taken = [a["block_id"] for a in atoms if a["block_id"] in ids]
+                if taken:
+                    raise HTTPException(409, f"{', '.join(taken)} already exists")
+                entry = ops._entry(eid, asked, said, ops._card_said(card))
+                known = {e.get("eid") for a in atoms for e in (a.get("context") or [])}
+                later = [e for e in (host.get("context") or []) if e.get("eid") not in known]
+                at = ids.index(host["block_id"])
+                for k, a in enumerate(atoms):
+                    block = {kk: v for kk, v in a.items() if kk in store.NEW_BLOCK_KEYS}
+                    block["context"] = ops._ctx_join(a.get("context"), later, [entry])
+                    add({"op": "add_block", "index": at + 1 + k, "block": block})
+                add({"op": "delete", "blocks": [host["block_id"]]})
+            else:
+                add(ev)
     return events
 
 
@@ -385,7 +400,7 @@ def accept(job_id: str, pid: str, body: Accept, d: Path = Depends(own)):
         elif prop["mode"] == "delete":
             events.append({"op": "delete", "blocks": [b["id"] for b in todo]})
         elif prop["mode"] == "assist":
-            events = _assist_events(job_id, todo)
+            events = _assist_events(job_id, todo, prop)
         else:
             for b in todo:
                 if (current[b["id"]].get("formatted_text") or "") != b["before"]:

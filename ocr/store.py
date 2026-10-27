@@ -92,9 +92,9 @@ def jobs_of(owner):
 
 
 # ── history: blocks_pre.json + events, with a cursor ──────────────────────
-BLOCK_FIELDS = {"formatted_text", "is_picture", "bodhan_type", "bbox_norm", "bbox_xyxy", "merged_from"}
+BLOCK_FIELDS = {"formatted_text", "is_picture", "bodhan_type", "bbox_norm", "bbox_xyxy", "merged_from", "context"}
 NEW_BLOCK_KEYS = {"block_id", "page", "bbox_xyxy", "bbox_norm", "bodhan_type", "is_picture",
-                  "image_path", "formatted_text", "text", "page_wh"}
+                  "image_path", "formatted_text", "text", "page_wh", "merged_from", "context"}
 
 
 def _find(blocks, block_id):

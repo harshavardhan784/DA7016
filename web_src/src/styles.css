@@ -147,6 +147,7 @@ a { color: var(--accent); }
 .bk table[data-border='0'] td { border-color: var(--line); border-style: dashed; }
 .bk tr.hdr td { font-weight: 700; background: #FAFAFB; }
 .bk td p { margin: 0; }
+.bk td .ops[data-layout] { grid-template-columns: 1fr; }     /* the Word file writes options in a cell one per line */
 .bk .selectedCell::after { content: ''; position: absolute; inset: 0; background: rgba(43,80,216,.2); pointer-events: none; }
 .bk .math { padding: 0 2px; border-radius: 3px; cursor: default; }
 .bk .math:hover { background: var(--hover); }

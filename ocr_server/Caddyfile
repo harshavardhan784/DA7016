@@ -1,7 +1,0 @@
-# Replace the name with your domain. Caddy gets and renews the HTTPS certificate by itself.
-your.domain.example {
-	request_body {
-		max_size 60MB
-	}
-	reverse_proxy 127.0.0.1:8000
-}

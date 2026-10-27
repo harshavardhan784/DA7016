@@ -158,7 +158,7 @@ export const BlockView = memo(function BlockView({ block, jobId, continues, drag
       {block.is_picture && block.has_image ? (
         <img className="pic" alt={`Picture ${label(block.id)}`} src={api.blockImageUrl(jobId, block.id)} />
       ) : empty ? (
-        <div className="ghostbox">Empty block {label(block.id)}{block.reason ? ` (${block.reason.replace(/_/g, ' ')})` : ''}. Select it and use Re-read to read it again.</div>
+        <div className="ghostbox">Empty block {label(block.id)}{block.reason ? ` (${block.reason.replace(/_/g, ' ')})` : ''}. Select it and ask the assistant to read it again from the image.</div>
       ) : 'raw' in parsed ? (
         <RawEditor block={block} reason={parsed.raw} />
       ) : visible || woken ? (

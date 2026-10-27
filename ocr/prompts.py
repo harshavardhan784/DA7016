@@ -55,33 +55,32 @@ REREAD_HINT = ("REVIEWER NOTE \u2014 the person checking this page says: \u00ab{
                "The note is never text to add: every word, number and symbol in your output must be printed in the image for that block. "
                "If the note says a character or word is misread, use what the image shows for it and change nothing else in the words.")
 
-ASSIST = """You help a person correct a document that was read from scanned or digital pages. The page images are attached.
-The document is made of blocks. Each block has an id, a place on the page (bbox = x0,y0,x1,y1 as fractions of the page) and the tags it has right now.
+ASSIST = """You edit a document that was read from scanned or digital pages. Its pieces are blocks: each has an id, a place on the page (bbox = x0,y0,x1,y1 as page fractions) and the tags it has now.
 
-THE PERSON'S REQUEST, about the SELECTED blocks:
+REQUEST, about the SELECTED blocks:
 \u00ab{note}\u00bb
 
-WHAT YOU CAN DO. Use only the actions the request needs:
-- edit: replace the tags of ONE selected block.
-- merge: join SEVERAL selected blocks into one block, for example a sentence or paragraph that continues from one block into the next. The merged block takes the place of the first of them; the others are removed.
-- insert: add a NEW block right after any block in the outline, for example a table. Use it when the request asks for something new that is not already in a selected block.
+IMAGES. A crop of each selected block is attached; the whole page only when the request needs it. The image is the truth for the words and the layout; the current tags are what the document says now.
+
+DO ONLY WHAT IS ASKED. There are two kinds of change; never mix them unless the request asks for both.
+- Layout or structure (outlines, tables, lists, alignment, size, bold, line breaks, merge, split): change the tags only. Every word, number, symbol and line break stays exactly as in the current tags.
+- Words (correct, re-read, check against the image): change only the words the image shows differently. Keep every tag (alignment, size, bold, list, table) as it is.
+- Reading a block shown as (a picture, no text), or with empty tags: EDIT it with the text printed in its crop.
+- Removing structure that is not on the page (for example a table outline where the page has plain lines or dots): replace it with <P> paragraphs, one per row, line or item, with the same words in the same order, keeping each line's alignment and size.
+A block that already matches the image and the request gets no action. If the request is a question, or no action can do it, give no action and answer in the reply.
+
+ACTIONS. Use only what the request needs; a block id appears in at most one action.
+- edit: new tags for ONE selected block. To change a block's words or layout always EDIT it: never delete a block and insert a replacement (the new block would lose its place on the page).
+- merge: ONE block from SEVERAL selected blocks (for example a sentence that continues into the next block). It takes the first one's place and keeps the first block's alignment and size unless asked. It holds all the words of the pieces, none added, none lost. Pieces side by side on one row: the left piece first, then the right piece as plain text inside <RIGHT>...</RIGHT> at the end of the same <P>. Pieces one after another: one paragraph if the sentence continues, otherwise separate <P>s.
+- unwrap: take the outline off the tables in ONE selected block and keep what is inside (rows and cells become plain paragraphs, nothing retyped). Always use it, never an edit, to remove a table outline, border or grid. all="true" also removes tables nested inside cells; without it they stay.
+- split: undo a merge. A block that shows parts= was made by merging them; the original blocks come back. A block that shows parts= is ALREADY merged: never merge it again. To change the gap or spacing between its parts, EDIT it: the left text, then the right text as plain text inside <RIGHT>...</RIGHT> at the end of the same <P>.
+- insert: a NEW block right after any block in the outline (for example a table).
 - delete: remove selected blocks.
-- split: undo a merge. A block that shows parts= was made by merging those pieces; split puts the original blocks back.
-If the request is only a question, or none of these actions can do it, give no action and answer in the reply.
 
-HOW TO WORK
-1. Understand the request. If it says something looks wrong, bad, or does not match the page, compare each selected block with its crop and with the page image, line by line, and fix every difference you can see: words, numbers, symbols, line breaks, lists, tables, alignment, formulas.
-2. The page image is the truth. Never invent text. Every word, number and symbol you write must be printed on the page, or be exactly what the request asks you to type.
-3. Keep the words of a block exactly as they are in its current tags, unless the request asks you to check, correct or re-read them against the image. Then change only what the image shows differently.
-4. merge: the new tags must contain all the words of the merged blocks, in reading order, none added and none lost. Join the pieces so they read as one paragraph, list or table, and keep the first block's alignment and size unless the request says otherwise.
-5. A block that already matches the page and the request gets no action. Each block id appears in at most one action.
-6. A formula, fraction or mixed number that sits inside a line of text belongs inline between single dollar signs in the same <P>.
-7. A block that shows parts= was made by merging those pieces, and its bbox covers them. EARLIER IN THIS SESSION lists what was asked and decided before: use it for follow-ups such as "the merged block" or "now centre it".
-8. Pieces side by side on one row (one left of the other, same height) are ONE paragraph: the left piece first, then the right piece as plain text inside <RIGHT>...</RIGHT> at the end of the paragraph, so the gap sits between them (left-most and right-most). Pieces one after another: join them as one paragraph when the sentence continues, otherwise keep separate <P>s.
-9. Write the tags with the reference below. Text inside tags is XML-escaped (&amp; &lt; &gt;); keep it escaped. Do not wrap the tags in <BLOCK>.
+RULES. Copy block ids exactly as written; only blocks listed under SELECTED BLOCKS can be edited, merged, split or deleted. Never invent text: every word you write is printed on the page or typed by the request. A formula, fraction or mixed number inside a line is inline between single dollar signs in the same <P>. CONTEXT OF EACH SELECTED BLOCK lists what was asked and decided about it earlier; use it for follow-ups ("the merged block", "now centre it"). After a merge the merged block has a NEW id made from its pieces' ids (for example p1_B1_B2): use that id from then on. Text inside tags is XML-escaped (&amp; &lt; &gt;); keep it escaped. Do not wrap tags in <BLOCK>.
 
-Answer in exactly this form and nothing else (no markdown fences). Leave out the actions you do not use:
-<REPLY>One or two plain sentences: what you understood and what you propose, or the answer to the question.</REPLY>
+ANSWER in exactly this form and nothing else: no reasoning, no fences. The REPLY is ONE short sentence.
+<REPLY>...</REPLY>
 <ACTION type="edit" id="BLOCK_ID">
 ...tags...
 </ACTION>
@@ -93,6 +92,7 @@ Answer in exactly this form and nothing else (no markdown fences). Leave out the
 </ACTION>
 <ACTION type="delete" ids="BLOCK_ID,BLOCK_ID"/>
 <ACTION type="split" id="BLOCK_ID"/>
+<ACTION type="unwrap" id="BLOCK_ID"/>
 
 TAG REFERENCE
 {tags}"""

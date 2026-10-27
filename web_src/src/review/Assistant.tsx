@@ -81,7 +81,7 @@ function Cards({ jobId, p }: { jobId: string; p: Proposal }) {
         {pending.length > 0 && (
           <div className="pfoot">
             {pending.length > 1 && <button className="btn sm dark" disabled={!!busy} onClick={() => void accept(p.id)}>{allGone ? `Delete all (${pending.length})` : `Accept all (${pending.length})`}</button>}
-            {!del && <span>{short(p.model)}{p.usage.calls ? ` · $${p.usage.cost.toFixed(3)}` : ''}</span>}
+            {!del && <span>{short(p.model)}{p.usage.calls ? ` · ${p.usage.seconds ?? 0}s · $${p.usage.cost.toFixed(3)}` : ''}</span>}
           </div>
         )}
       </div>

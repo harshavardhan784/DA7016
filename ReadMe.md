@@ -3,7 +3,7 @@
 Turns a PDF (digital or scanned; English, Hindi and other Indic scripts) into an editable Word file. A notebook holds the pipeline; a web app runs it, lets a person check each block against the page, fix it with an assistant, and export the `.docx`.
 
 - **How it works, stage by stage:** [methodology.md](methodology.md)
-- **Server updates, Gmail access, prompt files, fixes:** [DEPLOY.md](DEPLOY.md)
+- **Server updates, sign-in, prompt files, fixes:** [DEPLOY.md](DEPLOY.md)
 
 **How to read the commands.** Each command lists the folder to run it in, whether it needs an Administrator PowerShell, what it does, and what you should see.
 ✅ = run during writing this guide (Linux, Python 3.12, Node 22). ⚠️ = not run: it needs Windows Server, real API keys, Google sign-in, Caddy or a browser, so treat it as the documented procedure, not a tested one.
@@ -11,8 +11,9 @@ Turns a PDF (digital or scanned; English, Hindi and other Indic scripts) into an
 ## Repository layout
 
 ```text
-pipeline/infinite_ocr.ipynb   the notebook: the only copy of the pipeline logic. Replace it to update the pipeline.
-ocr/nb.py                     finds the notebook's cells by what they define and runs them (fails loudly if it changed)
+pipeline/stage_*.py           the pipeline as it runs: one file per notebook cell, the code unchanged
+pipeline/runtime.py           runs the stage files in order in one shared namespace (replaces the old ocr/nb.py)
+pipeline/infinite_ocr.ipynb   the notebook: the reference the stage files were cut from (not run by the app)
 ocr/ops.py                    pipeline run, rebuild, review, new box, assistant: each in its own process
 ocr/store.py                  one folder per job, edit history with undo / redo
 ocr/api.py, ocr/auth.py       web server and Google sign-in
@@ -25,7 +26,7 @@ web_src/                      the screen's source: React + TypeScript + TipTap
 tests/                        python -m pytest tests -q   (the Word-fidelity test needs `npm test` in web_src first)
 ```
 
-The app changes the notebook in only two places at run time: the `PDF_PATH` and `PAGES` lines, plus a snapshot of `ordered_blocks` saved to `blocks_pre.json` just before the final cell (`ocr/nb.py`).
+The app changes the pipeline in only two places at run time: the `PDF_PATH` and `PAGES` lines of `stage_config.py`, plus a snapshot of `ordered_blocks` saved to `blocks_pre.json` just before the final stage (`pipeline/runtime.py`).
 
 ---
 
@@ -80,7 +81,7 @@ Expect: `SUCCESS: Specified value was saved.` Open a **new** PowerShell afterwar
 ```powershell
 powershell -ExecutionPolicy Bypass -File C:\app\go_public.ps1
 ```
-It asks four questions: the domain, the Google Client ID, the emails allowed to sign in, and (optional) a whole mail domain such as `gmail.com`. It then checks that the domain points at this server, saves the settings as machine environment variables, writes `C:\app\start.bat` (with the real Python path) and `C:\app\Caddyfile`, opens ports 80 and 443 in Windows Firewall, registers two start-at-boot tasks (`OCR-App`, `OCR-Caddy`, running as SYSTEM) and starts them.
+It asks three questions: the domain, the Google Client ID and the email(s) allowed to sign in. It then checks that the domain points at this server, saves the settings as machine environment variables, writes `C:\app\start.bat` (with the real Python path) and `C:\app\Caddyfile`, opens ports 80 and 443 in Windows Firewall, registers two start-at-boot tasks (`OCR-App`, `OCR-Caddy`, running as SYSTEM) and starts them.
 Expect: "The app is running on this machine." and "HTTPS works: https://<your-domain>". Running the script again changes the answers.
 
 **5. Prove it starts by itself** · Admin: yes — restart the server once, wait 3 to 5 minutes, open `https://<your-domain>`.
@@ -96,22 +97,22 @@ Set as machine environment variables (`setx NAME "value" /M`, new processes only
 | `OPENROUTER_API_KEY`, `BODHAN_OCR_API_KEY` | none | model access; without them review/assistant and the pipeline fail with a clear message |
 | `GOOGLE_CLIENT_ID` | none | enables Google sign-in |
 | `ALLOWED_EMAILS` | none | comma list; `*` allows anyone |
-| `ALLOWED_DOMAIN` | none | e.g. `gmail.com` lets in every address at that domain |
 | `SESSION_SECRET` | generated into `data\secret.key` | signs the login cookie |
 | `SESSION_HOURS` | 168 | login lifetime |
 | `AUTH_DISABLED` | off | `1` turns sign-in off: local testing only |
-| `MAX_UPLOAD_MB` / `MAX_PAGES` | 50 / 20 | one PDF's limits (Caddy also caps the body at 60 MB) |
-| `USER_DAILY_PAGES` | 100 | pages one person may upload per 24 h; `0` = no limit |
+| `MAX_UPLOAD_MB` | 50 | the size limit of one PDF (Caddy also caps the body at 60 MB); there is no page limit and no daily limit |
 | `JOB_TIMEOUT` / `OP_TIMEOUT` | 3600 / 600 s | pipeline run / rebuild-review-assistant run |
+| `ASSIST_MODEL` | `openai/gpt-4.1-mini` | the model the assistant uses: any OpenRouter model name, e.g. `google/gemini-2.5-flash`; set it empty (`set ASSIST_MODEL=`) to use the notebook's `classify` model |
+| `ASSIST_MAX_TOKENS` | automatic (1500 + 2 per character, at most 8000) | the most tokens one assistant answer may use |
 | `OCR_DATA` | `<app>\data` | where documents, logs, prompts and the secret key live |
 
-Models, routing thresholds and other pipeline knobs are in the notebook's config and route cells (see methodology.md §7).
+The assistant's model and answer length are `ASSIST_MODEL` and `ASSIST_MAX_TOKENS`: to change them put `set ASSIST_MODEL=...` and `set ASSIST_MAX_TOKENS=...` above the `python` line in `C:\app\start.bat` (or `setx … /M`), then restart the app task. Models, routing thresholds and other pipeline knobs are in the notebook's config and route cells (see methodology.md §7).
 
 ## 1.4 Run and monitor
 
 | Task | Command (Administrator PowerShell, any folder) | Expect |
 |---|---|---|
-| Health check ⚠️ | `curl.exe http://127.0.0.1:8000/api/config` | one line of JSON such as `{"auth":true,"google_client_id":"…","max_mb":50,"max_pages":20}` (✅ on Linux with auth off) |
+| Health check ⚠️ | `curl.exe http://127.0.0.1:8000/api/config` | one line of JSON such as `{"auth":true,"google_client_id":"…","max_mb":50}` (✅ on Linux with auth off) |
 | Task state | `Get-ScheduledTask -TaskName OCR-App, OCR-Caddy` | both listed, `Ready` or `Running` |
 | Stop the app | `Stop-ScheduledTask -TaskName OCR-App -ErrorAction SilentlyContinue; Get-Process python -ErrorAction SilentlyContinue \| Stop-Process -Force` | no python process |
 | Start the app | `Start-ScheduledTask -TaskName OCR-App` | health check answers within seconds |
@@ -138,11 +139,11 @@ cd C:\app
 python -m pip install -r requirements.txt
 Start-ScheduledTask -TaskName OCR-App
 ```
-`robocopy` exit codes 0 to 7 are success. Anything else you put by hand in `C:\app` is removed. If the assistant's wording changed in the update, also delete the old prompt files once (they override the built-in wording): `Remove-Item C:\app\data\prompts\*.txt`.
+`robocopy` exit codes 0 to 7 are success. Anything else you put by hand in `C:\app` is removed. If the assistant's wording changed in the update, also delete the old prompt files once (they override the built-in wording): `Remove-Item C:\app\data\prompts\*.txt`. A prompt change takes effect on the next request; no restart is needed.
 
-## 1.6 Let in more people
+## 1.6 Change who can sign in
 
-Folder: any · Admin: yes ⚠️. DEPLOY.md section B has the exact commands (it adds `set ALLOWED_DOMAIN=gmail.com` to `start.bat` and restarts the app). Remember step 1.2-6 (Publish app). Everyone admitted uses your model credit, limited by `USER_DAILY_PAGES`.
+Folder: any · Admin: yes ⚠️. DEPLOY.md section B has the exact commands (it replaces the address on the `ALLOWED_EMAILS` line of `start.bat` and restarts the app). While the Google app is in Testing, the address must also be a test user in the Google console.
 
 ## 1.7 Edit the assistant's wording
 
@@ -161,7 +162,7 @@ cd ..
 python -m pip install -r requirements-dev.txt
 python -m pytest tests -q
 ```
-✅ Result here: `npm test` 54 passed (also on a clean checkout), build OK, `pytest` 103 passed. `requirements-dev.txt` includes `docling`; the tests passed here without it because only Route 1 imports it.
+✅ Result here: `npm test` 65 passed (also on a clean checkout), build OK, `pytest` 132 passed. `requirements-dev.txt` includes `docling`; the tests passed here without it because only Route 1 imports it.
 Browser walk-through (`tests/ui_server.py`, `tests/ui_check.py`, needs `pip install playwright` and Chromium) ⚠️ not run.
 One real-model check on the server (costs a few cents) ⚠️: `python -m ocr.smoke C:\path\to\small.pdf` from `C:\app`. Without keys or network it stops with `RuntimeError: pipeline failed - see run.log` ✅; with no file argument it fails with `IndexError`.
 
@@ -169,7 +170,7 @@ One real-model check on the server (costs a few cents) ⚠️: `python -m ocr.sm
 
 | Symptom | Check / fix |
 |---|---|
-| Other Gmail accounts cannot sign in | `ALLOWED_DOMAIN`/`ALLOWED_EMAILS` set (section 1.6) **and** the Google app is Published |
+| Cannot sign in | the address is on the `ALLOWED_EMAILS` line (section 1.6) **and** is a test user in the Google console (or the Google app is Published) |
 | Google says `origin_mismatch` or no sign-in button | the origin in Google must be exactly `https://<your-domain>` |
 | "The server has no OPENROUTER_API_KEY" | `setx … /M` (step 3), then restart the app task; if still missing, restart the server ⚠️ |
 | Job shows "pipeline failed - see run.log" | read the end of `run.log`. If it stops with **no error text**, the Python process crashed natively: check Windows Event Viewer → Application for `python.exe` / `APPCRASH` (once seen inside `docling_parse`); uploading the same file again worked |
@@ -192,12 +193,12 @@ One real-model check on the server (costs a few cents) ⚠️: `python -m ocr.sm
 You need the web address and a Google account that the administrator has allowed. ⚠️ (browser, Google and server not available here)
 
 1. **Open the address and sign in** with Google. Expect: the "Infinite OCR" page with your email at the top.
-2. **Add a PDF**: drop it on the box or press **Choose a PDF**. Limits: 20 pages, 50 MB, and 100 pages per 24 hours per person. Expect: a new card with "Waiting in the queue", then "Reading the pages", "Building the document", **Ready**. One document is processed at a time, so you may see "(n ahead)".
+2. **Add a PDF**: drop it on the box or press **Choose a PDF**. Limit: 50 MB (any number of pages). Expect: a new card with "Waiting in the queue", then "Reading the pages", "Building the document", **Ready**. One document is processed at a time, so you may see "(n ahead)".
 3. **Press Open.** The left side is the original page with a box per block; the right side is the Word-style result; the **Assistant** panel is on the far right. The pill at the top says how the PDF was read.
 4. **Check and correct.**
    - Click a block to select it (Ctrl+click adds more; the **Drag** tool selects with a rectangle). Click inside a block to type; formatting buttons are above the page (alignment and table menus open under their buttons).
    - **New box** reads text the OCR missed: draw a box on the page and accept the result.
-   - **Assistant**: select blocks, then type anything in plain words: "merge these two, they are side by side", "split them again", "add a table after this block", "check this against the image, it is wrong, correct it", "the brackets are missing", "delete these". It proposes cards. **Nothing changes until you press Accept** (Compare shows the page crop, before and after; a warning note appears when words would change). It remembers your earlier requests in this document, so you can say "now centre the merged block".
+   - **Assistant**: select blocks, then type anything in plain words: "merge these two, they are side by side", "split them again", "add a table after this block", "check this against the image, it is wrong, correct it", "the brackets are missing", "delete these". It proposes cards. **Nothing changes until you press Accept** (Compare shows the page crop, before and after; a warning note appears when words would change). It remembers what you asked about each block. After a merge the new block gets a name made from its pieces (for example `B1_B2`) and carries the context of both, so you can carry on with "now centre the merged block".
    - **Undo / Redo** (toolbar) reverse accepted changes; one Accept is one Undo. The **Delete** key removes the selected blocks.
 5. **Export DOCX** (top right). Expect: a Word file named after your PDF.
 
@@ -214,7 +215,7 @@ python -m pip install -r requirements.txt
 ```
 Linux/macOS: `cd <repo>`, `python3 -m venv .venv`, `source .venv/bin/activate`, `python -m pip install -r requirements.txt` ✅ (venv step). Expect: the prompt shows `(.venv)`.
 
-**Prepare the input:** a PDF that opens normally, at most 20 pages and 50 MB (the command line has no page-range option: all pages are read).
+**Prepare the input:** a PDF that opens normally, at most 50 MB (all pages are read; there is no page limit).
 
 **Set the keys for this window only**
 ```powershell
@@ -223,7 +224,7 @@ $env:BODHAN_OCR_API_KEY = "<your-bodhan-key>"
 ```
 (Linux/macOS: `export NAME="value"`.)
 
-**A. One real-model check of the whole pipeline** (runs the notebook on the PDF, rebuilds, then tries the format and re-read shortcuts on one block; nothing is applied) ⚠️ with keys, ✅ failure path
+**A. One real-model check of the whole pipeline** (runs the pipeline on the PDF, rebuilds, then tries the format and re-read shortcuts on one block; nothing is applied) ⚠️ with keys, ✅ failure path
 ```powershell
 python -m ocr.smoke C:\path\to\small.pdf
 ```
@@ -234,7 +235,7 @@ Expect: it prints `route: … blocks: … job folder: …` and a before/after fo
 $env:AUTH_DISABLED = "1"
 python -m uvicorn ocr.api:app --host 127.0.0.1 --port 8000
 ```
-Expect: `Uvicorn running on http://127.0.0.1:8000`. In a second window, `curl http://127.0.0.1:8000/api/config` prints `{"auth":false,"google_client_id":"","max_mb":50,"max_pages":20}`; open `http://127.0.0.1:8000` in a browser and use the app as in 2.1. Stop with Ctrl+C. Data is written under `.\data` unless `OCR_DATA` is set.
+Expect: `Uvicorn running on http://127.0.0.1:8000`. In a second window, `curl http://127.0.0.1:8000/api/config` prints `{"auth":false,"google_client_id":"","max_mb":50}`; open `http://127.0.0.1:8000` in a browser and use the app as in 2.1. Stop with Ctrl+C. Data is written under `.\data` unless `OCR_DATA` is set.
 
 **C. The notebook by itself (advanced)** ⚠️ not run. The notebook is meant to be run top to bottom in Jupyter (Jupyter is not in `requirements.txt`; install it yourself). Set `PDF_PATH` and `PAGES` in the config cell first. Results go to `compare_out\infinite_ocr\<name>__<route>.docx` and `.blocks.json` next to where you run it.
 
@@ -263,13 +264,14 @@ Expect: `Uvicorn running on http://127.0.0.1:8000`. In a second window, `curl ht
 | You see | Do this |
 |---|---|
 | "… is not on the allowed list" or Google refuses | ask the administrator to add your address |
-| "PDF has N pages; limit is 20" / "file larger than 50 MB" | split or compress the PDF |
-| "Daily limit: …" | wait; the limit counts the last 24 hours |
+| "file larger than 50 MB" | compress or split the PDF |
 | "Failed — pipeline failed - see run.log" | upload again once (a one-off crash happened before); if it repeats, send the administrator the PDF and the end of `run.log` |
 | "pipeline took longer than …" | the PDF is too big or the models are slow: split it |
 | Assistant says the model's answer could not be read, or a card is skipped with a reason | ask again in other words, or select fewer blocks (at most 3 pages) |
 | "… was edited after this proposal was made" | you changed the block meanwhile; ask the assistant again |
 | A menu under Align or Table is not visible | hard-refresh the page (Ctrl+F5) after the administrator updates the server |
+| The assistant is slow | the card footer shows the seconds the model took; `ops.log` in the job folder has a line `assist …: prepare=…s model=…s` that shows where the time went |
+| A block shows as raw tags ("Shown as tags because …") | tables with options, lists, a nested table or a forgotten `</P>` show normally after the update (Ctrl+F5); if a block still shows tags, the reason on that line says which shape; send it to the developer |
 | Words are wrong in a scanned block | select the block, tell the assistant "check this against the image and correct it", then compare before accepting |
 
 ---

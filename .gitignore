@@ -16,10 +16,13 @@ __pycache__/
 venv/
 *.egg-info/
 
+
 # ── Notebook runs outside the app ────────────────────────────────────────
 # The notebook writes ./compare_out/ next to where it is run; pdf/ is the notebook's default input folder.
 compare_out/
 pdf/
+tests/
+ocr/smoke.py
 .ipynb_checkpoints/
 
 # ── Web screen (web_src) ─────────────────────────────────────────────────

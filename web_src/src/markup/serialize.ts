@@ -46,6 +46,7 @@ const hasContent = (n: PM) => (n.content ?? []).some((c) => c.type !== 'text' ||
 function cellXml(c: PM): string {
   const ps = c.content ?? []
   const head = `<CELL${attr('colspan', (c.attrs?.colspan as number) > 1 ? c.attrs?.colspan : null)}${attrs(c.attrs, ['align', 'bold', 'size'])}>`
+  if (ps.some((p) => p.type !== 'paragraph')) return `${head}${ps.map(block).join('')}</CELL>`      // options or a list in the cell
   const plain = ps.length === 1 && P_ATTRS.every((k) => !ps[0].attrs?.[k])
   if (plain) return `${head}${inline(ps[0].content)}</CELL>`
   return `${head}${ps.filter(hasContent).map((p) => `<P${attrs(p.attrs, P_ATTRS)}>${inline(p.content)}</P>`).join('')}</CELL>`

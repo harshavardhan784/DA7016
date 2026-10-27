@@ -6,11 +6,9 @@ import pymupdf
 import pytest
 import requests
 
-from tests.conftest import FakeResp
-from ocr import store
-from ocr import config
-from ocr import nb
-from ocr import ops
+from conftest import FakeResp
+from ocr import config, ops, store
+from pipeline import runtime as nb
 
 REPLY = ('<BLOCK id="1" kind="text" bbox="0.10,0.10,0.90,0.20">\n<P align="center" bold="true">Title line</P>\n</BLOCK>\n'
          '<BLOCK id="2" kind="picture" bbox="100,400,600,700"></BLOCK>\n'

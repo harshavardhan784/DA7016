@@ -126,8 +126,7 @@
  },
  {
   "id": "hand29",
-  "markup": "<P>nested <P>paragraph</P> inside</P>",
-  "refuse": true
+  "markup": "<P>nested <P>paragraph</P> inside</P>"
  },
  {
   "id": "hand30",
@@ -179,5 +178,45 @@
  {
   "id": "math8",
   "markup": "<P><STYLE bold=\"true\">bold $\\alpha + \\beta$ formula</STYLE> after</P>"
+ },
+ {
+  "id": "cell1",
+  "markup": "<TABLE border=\"1\"><ROW><CELL><P>Q13 assertion text<BR/>reason text</P><OPTIONS layout=\"vertical\"><OPTION>a) one</OPTION><OPTION>b) two</OPTION></OPTIONS><OPTIONS layout=\"vertical\"><OPTION>(a) first</OPTION><OPTION>(b) second</OPTION></OPTIONS></CELL></ROW></TABLE>"
+ },
+ {
+  "id": "cell2",
+  "markup": "<TABLE border=\"1\"><ROW><CELL><OPTIONS layout=\"vertical\"><OPTION>d) only options in this cell</OPTION></OPTIONS></CELL></ROW><ROW><CELL><P>next row</P></CELL></ROW></TABLE>"
+ },
+ {
+  "id": "cell3",
+  "markup": "<TABLE border=\"1\"><ROW><CELL><P>intro</P><LIST type=\"bullet\"><ITEM>• one</ITEM><ITEM>• two</ITEM></LIST></CELL></ROW></TABLE>"
+ },
+ {
+  "id": "cell4",
+  "markup": "<TABLE border=\"1\"><ROW><CELL><P>paragraph</P>stray text beside it</CELL></ROW></TABLE>"
+ },
+ {
+  "id": "cell5",
+  "markup": "<TABLE border=\"1\"><ROW><CELL><OPTIONS layout=\"grid\" columns=\"2\"><OPTION>a) 216</OPTION><OPTION>b) 202</OPTION><OPTION>c) 203</OPTION><OPTION>d) 206</OPTION></OPTIONS></CELL><CELL><P>side</P></CELL></ROW></TABLE>"
+ },
+ {
+  "id": "cell6",
+  "markup": "<TABLE border=\"1\"><ROW><CELL><QUESTION><P>1. stem</P><OPTIONS layout=\"vertical\"><OPTION>(a) x</OPTION></OPTIONS></QUESTION></CELL></ROW></TABLE>"
+ },
+ {
+  "id": "cell7",
+  "markup": "<TABLE border=\"1\"><ROW><CELL><P>outer</P><TABLE border=\"1\"><ROW><CELL>inner</CELL></ROW></TABLE></CELL></ROW></TABLE>"
+ },
+ {
+  "id": "open1",
+  "markup": "<P>Q18 first line\n<P>Q19 second line</P>"
+ },
+ {
+  "id": "open2",
+  "markup": "<TABLE border=\"1\"><ROW><CELL><P>प्रश्न 18 लीग\n<P>प्रश्न 19 संक्रामक रोग क्या हैं?</P></CELL></ROW></TABLE>"
+ },
+ {
+  "id": "cell8",
+  "markup": "<TABLE border=\"1\"><ROW><CELL><P>Assertion (A) text</P><OPTIONS layout=\"vertical\"><OPTION>a) first</OPTION><OPTION>b) second</OPTION></OPTIONS></CELL></ROW><ROW><CELL><TABLE border=\"1\"><ROW><CELL colspan=\"2\"><P align=\"center\" bold=\"true\" size=\"11\">SHORT ANSWER TYPE QUESTIONS<BR/>(3 MARKS EACH)</P></CELL></ROW><ROW><CELL><P>प्रश्न 22 राष्ट्रीय एकता</P></CELL><CELL><P>marks</P></CELL></ROW></TABLE></CELL></ROW></TABLE>"
  }
 ]

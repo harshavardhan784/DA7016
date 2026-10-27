@@ -5,14 +5,11 @@ import pymupdf
 import pytest
 from fastapi.testclient import TestClient
 
-from tests.conftest import BLOCKS
-from ocr import store
-from ocr import api
-from ocr import auth
-from ocr import config
-from ocr import ops
+from conftest import BLOCKS
+from ocr import api, auth, config, ops, store
 
 QWEN = "qwen/qwen3-vl-30b-a3b-instruct"          # the model the notebook names for its 'classify' stage
+GPT = "openai/gpt-4.1-mini"                       # the assistant's model unless the server sets another
 
 
 def _pdf():
@@ -31,7 +28,6 @@ def client(tmp_path, monkeypatch, fake_models):
     monkeypatch.setattr(config, "AUTH_DISABLED", False)
     monkeypatch.setattr(config, "GOOGLE_CLIENT_ID", "cid")
     monkeypatch.setattr(config, "ALLOWED_EMAILS", {"a@example.com", "b@example.com"})
-    monkeypatch.setattr(config, "ALLOWED_DOMAIN", "")
     monkeypatch.chdir(tmp_path)
 
     def fake_run(job_dir):                      # stands in for the paid, minutes-long notebook run
@@ -83,11 +79,18 @@ def test_sign_in_rules(client):
     assert client.get("/api/me").status_code == 401
 
 
-def test_upload_limits(client, monkeypatch):
+def test_upload_only_checks_that_it_is_a_pdf_and_its_size(client, monkeypatch):
+    import pymupdf
     sign_in(client, "tok-a")
     assert client.post("/api/jobs", files={"file": ("t.pdf", b"not a pdf", "application/pdf")}).status_code == 400
-    monkeypatch.setattr(config, "MAX_PAGES", 1)
-    assert client.post("/api/jobs", files={"file": ("t.pdf", _pdf(), "application/pdf")}).status_code == 400
+    big = pymupdf.open()
+    for _ in range(60):                                                              # far more pages than the old limit of 20: accepted
+        big.new_page()
+    r = client.post("/api/jobs", files={"file": ("t.pdf", big.tobytes(), "application/pdf")})
+    assert r.status_code == 200 and r.json()["pages"] == 60
+    assert "max_pages" not in client.get("/api/config").json()
+    monkeypatch.setattr(config, "MAX_MB", 0)                                         # the size limit is still there
+    assert client.post("/api/jobs", files={"file": ("t.pdf", _pdf(), "application/pdf")}).status_code == 413
 
 
 def test_jobs_are_private(client):
@@ -231,32 +234,24 @@ def test_inserting_a_block_without_a_box_and_undoing_it(client):
     client.post(f"/api/jobs/{jid}/rebuild")                                                  # and the document still builds
 
 
-def test_daily_page_limit_per_person(client, monkeypatch):
-    monkeypatch.setattr(config, "USER_DAILY_PAGES", 5)
+def test_there_is_no_daily_limit(client):
+    import pymupdf
     sign_in(client, "tok-a")
-    assert client.post("/api/jobs", files={"file": ("t.pdf", _pdf(), "application/pdf")}).status_code == 200          # 2 pages
-    assert client.post("/api/jobs", files={"file": ("t.pdf", _pdf(), "application/pdf")}).status_code == 200          # 4 pages
-    r = client.post("/api/jobs", files={"file": ("t.pdf", _pdf(), "application/pdf")})                               # would be 6
-    assert r.status_code == 429 and "Daily limit" in r.json()["detail"]
-    sign_in(client, "tok-b")                                                                                          # someone else is unaffected
-    assert client.post("/api/jobs", files={"file": ("t.pdf", _pdf(), "application/pdf")}).status_code == 200
-    monkeypatch.setattr(config, "USER_DAILY_PAGES", 0)                                                                # 0 switches it off
-    sign_in(client, "tok-a")
-    assert client.post("/api/jobs", files={"file": ("t.pdf", _pdf(), "application/pdf")}).status_code == 200
-    for who in ("tok-a", "tok-b"):                                                                                    # let the background runs end
-        sign_in(client, who)
-        for _ in range(300):
-            if all(j["state"] in ("done", "error") for j in client.get("/api/jobs").json()):
-                break
-            time.sleep(0.1)
+    big = pymupdf.open()
+    for _ in range(60):
+        big.new_page()
+    for _ in range(3):                                                                                                # 180 pages in a row: far above the old 100 a day
+        assert client.post("/api/jobs", files={"file": ("t.pdf", big.tobytes(), "application/pdf")}).status_code == 200
+    for _ in range(300):                                                                                              # let the background runs end
+        if all(j["state"] in ("done", "error") for j in client.get("/api/jobs").json()):
+            break
+        time.sleep(0.1)
 
 
 def test_who_may_sign_in(monkeypatch):
-    monkeypatch.setattr(config, "ALLOWED_EMAILS", {"a@example.com"}); monkeypatch.setattr(config, "ALLOWED_DOMAIN", "")
-    assert auth.allowed("A@example.com") and not auth.allowed("x@gmail.com")
-    monkeypatch.setattr(config, "ALLOWED_DOMAIN", "gmail.com")
-    assert auth.allowed("anyone@gmail.com") and not auth.allowed("x@outlook.com") and not auth.allowed("a@gmail.com.evil.com")
-    monkeypatch.setattr(config, "ALLOWED_EMAILS", {"*"}); monkeypatch.setattr(config, "ALLOWED_DOMAIN", "")
+    monkeypatch.setattr(config, "ALLOWED_EMAILS", {"a@example.com"})
+    assert auth.allowed("A@example.com") and not auth.allowed("x@gmail.com") and not auth.allowed("anyone@example.com") and not auth.allowed("a@example.com.evil.com")
+    monkeypatch.setattr(config, "ALLOWED_EMAILS", {"*"})
     assert auth.allowed("x@outlook.com")
 
 
@@ -290,13 +285,13 @@ TABLE = '<TABLE border="1"><ROW header="true"><CELL>A</CELL><CELL>B</CELL></ROW>
 def assistant(monkeypatch):
     """Stands in for the model: answers every assistant call with `says[0]` and records what it was sent."""
     import requests
-    from tests.conftest import FakeResp
+    from conftest import FakeResp
     box = {"says": "", "sent": []}
 
     def post(url, *a, **kw):
         body = kw.get("json") or {}
         box["sent"].append(body)
-        return FakeResp({"choices": [{"message": {"content": box["says"]}, "finish_reason": "stop"}],
+        return FakeResp({"choices": [{"message": {"content": box["says"]}, "finish_reason": box.get("finish", "stop")}],
                          "usage": {"prompt_tokens": 100, "completion_tokens": 20, "cost": 0.001}, "model": body.get("model")})
     monkeypatch.setattr(requests, "post", post)
     return box
@@ -317,26 +312,11 @@ def test_the_assistant_gets_the_blocks_their_tags_the_page_and_a_crop(client, as
     p = assist(client, jid, "combine these two", ("p1_b4", "p2_b1"))
     sent = assistant["sent"][0]
     text = next(c["text"] for c in sent["messages"][0]["content"] if c.get("type") == "text")
-    assert sent["model"] == QWEN and "combine these two" in text and "TAG REFERENCE" in text
+    assert sent["model"] == GPT and "combine these two" in text and "TAG REFERENCE" in text
     assert '<BLOCK id="p1_b4"' in text and "directly proportional to the</P>" in text and "PAGE OUTLINE" in text and "p1_b3 -" in text
     kinds = [c.get("type") for c in sent["messages"][0]["content"]]
     assert kinds.count("image_url") == 2 + 2                                # two pages and two block crops
     assert p["mode"] == "assist" and p["blocks"] == [] and p["message"] == "Nothing to do." and p["alternatives"] == []
-
-
-def test_merging_two_blocks_is_one_card_one_undo(client, assistant):
-    sign_in(client, "tok-a"); jid = upload_and_wait(client)
-    assistant["says"] = f'<REPLY>The sentence continues, so I joined them.</REPLY>\n<ACTION type="merge" ids="p2_b1,p1_b4">\n{MERGED}\n</ACTION>'
-    p = assist(client, jid, "we should combine these two, flow continuation", ("p2_b1", "p1_b4"))
-    (c,) = p["blocks"]
-    assert c["kind"] == "merge" and c["ids"] == ["p1_b4", "p2_b1"] and c["warn"] is None and c["after"] == MERGED     # reading order, not click order
-    assert doc(client, jid)["blocks"]["p2_b1"]                                                                          # nothing changed yet
-    assert client.post(f"/api/jobs/{jid}/proposals/{p['id']}/accept", json={}).status_code == 200
-    d = doc(client, jid)
-    assert "p2_b1" not in d["order"] and d["blocks"]["p1_b4"]["markup"] == MERGED
-    client.post(f"/api/jobs/{jid}/undo")
-    d = doc(client, jid)
-    assert "p2_b1" in d["order"] and d["blocks"]["p1_b4"]["markup"] == BLOCKS[3]["formatted_text"]
 
 
 def test_a_merge_that_loses_words_is_flagged(client, assistant):
@@ -379,7 +359,7 @@ def test_bad_actions_are_skipped_with_a_reason_not_applied(client, assistant):
                          '<ACTION type="shuffle" id="p2_b2"/>')
     p = assist(client, jid, "do things", ("p2_b2",))
     assert p["blocks"] == [] and len(p["skipped"]) == 5
-    assert "not one of the selected" in p["skipped"][0]["reason"] and "balanced" in p["skipped"][1]["reason"]
+    assert "is not selected" in p["skipped"][0]["reason"] and "balanced" in p["skipped"][1]["reason"]
 
 
 def test_one_block_cannot_be_used_by_two_actions_and_delete_works(client, assistant):
@@ -421,52 +401,342 @@ def prompt_text(box):
     return next(c["text"] for c in box["sent"][-1]["messages"][0]["content"] if c.get("type") == "text")
 
 
-def test_a_merge_grows_the_box_remembers_its_parts_and_can_be_split_back(client, assistant):
-    sign_in(client, "tok-a"); jid = upload_and_wait(client)
-    original = {b["block_id"]: b for b in store.current_blocks(jid) if b["block_id"] in ("p1_b2", "p1_b3")}
-    assistant["says"] = '<REPLY>Joined.</REPLY><ACTION type="merge" ids="p1_b2,p1_b3"><P>State Ohms law. Quantity Symbol Current I</P></ACTION>'
-    p = assist(client, jid, "merge these two, they are side by side", ("p1_b2", "p1_b3"))
-    client.post(f"/api/jobs/{jid}/proposals/{p['id']}/accept", json={})
-    merged = {b["block_id"]: b for b in store.current_blocks(jid)}["p1_b2"]
-    assert merged["bbox_norm"] == [.1, .15, .9, .55]                                       # the box now covers both pieces
-    assert [a["block_id"] for a in merged["merged_from"]] == ["p1_b2", "p1_b3"]
-    assert doc(client, jid)["blocks"]["p1_b2"]["bbox_norm"] == [.1, .15, .9, .55] and "p1_b3" not in doc(client, jid)["order"]
-
-    assistant["says"] = "<REPLY>ok</REPLY>"
-    assist(client, jid, "now move the gap", ("p1_b2",))                                     # a follow-up: it must see the parts and the earlier turn
-    t = prompt_text(assistant)
-    assert 'parts="p1_b2 [page 1' in t and "p1_b3 [page 1" in t and "EARLIER IN THIS SESSION" in t
-    assert "merge these two, they are side by side" in t and "Merge p1 \u00b7 B2 + p1 \u00b7 B3: accepted" in t
-
-    assistant["says"] = '<ACTION type="split" id="p1_b2"/>'
-    p = assist(client, jid, "split them again", ("p1_b2",))
-    (c,) = p["blocks"]
-    assert c["kind"] == "split"
-    assert client.post(f"/api/jobs/{jid}/proposals/{p['id']}/accept", json={}).status_code == 200
-    now = {b["block_id"]: b for b in store.current_blocks(jid)}
-    order = doc(client, jid)["order"]
-    assert order[order.index("p1_b2") + 1] == "p1_b3" and not now["p1_b2"].get("merged_from")
-    for i in ("p1_b2", "p1_b3"):
-        assert now[i]["bbox_norm"] == original[i]["bbox_norm"] and now[i]["formatted_text"] == original[i]["formatted_text"]
-    client.post(f"/api/jobs/{jid}/undo")                                                    # undo the split: merged again, in one step
-    assert "p1_b3" not in doc(client, jid)["order"]
-
-
-def test_merging_across_pages_keeps_the_first_box_and_sends_the_other_part_as_a_crop(client, assistant):
-    sign_in(client, "tok-a"); jid = upload_and_wait(client)
-    assistant["says"] = f'<ACTION type="merge" ids="p1_b4,p2_b1">{MERGED}</ACTION>'
-    p = assist(client, jid, "the sentence continues on the next page", ("p1_b4", "p2_b1"))
-    client.post(f"/api/jobs/{jid}/proposals/{p['id']}/accept", json={})
-    b = {x["block_id"]: x for x in store.current_blocks(jid)}["p1_b4"]
-    assert b["bbox_norm"] == [.1, .85, .9, .95] and [a["page"] for a in b["merged_from"]] == [1, 2]
-    assistant["says"] = "<REPLY>ok</REPLY>"
-    assist(client, jid, "check it", ("p1_b4",))
-    kinds = [c.get("type") for c in assistant["sent"][-1]["messages"][0]["content"]]
-    assert kinds.count("image_url") == 1 + 1 + 1                                            # page 1, the block's crop, the part on page 2
-
-
 def test_splitting_a_block_that_was_never_merged_is_refused(client, assistant):
     sign_in(client, "tok-a"); jid = upload_and_wait(client)
     assistant["says"] = '<ACTION type="split" id="p1_b2"/>'
     p = assist(client, jid, "split", ("p1_b2",))
     assert p["blocks"] == [] and "nothing to split" in p["skipped"][0]["reason"]
+
+
+def n_images(box):
+    return sum(c.get("type") == "image_url" for c in box["sent"][-1]["messages"][0]["content"])
+
+
+def test_a_layout_request_sends_only_the_block_crop_and_may_not_change_the_words(client, assistant):
+    sign_in(client, "tok-a"); jid = upload_and_wait(client)
+    assistant["says"] = '<REPLY>Plain paragraphs.</REPLY><ACTION type="edit" id="p2_b2"><P>Next paragraph.</P><P>extra words</P></ACTION>'
+    p = assist(client, jid, "remove the table outline, not the text", ("p2_b2",))
+    assert n_images(assistant) == 1 and "a crop of each selected block only" in prompt_text(assistant)      # no whole page
+    assert p["blocks"] == [] and "changed the words" in p["skipped"][0]["reason"]                           # layout request, words changed: not offered
+    assistant["says"] = '<ACTION type="edit" id="p2_b2"><P align="center">Next paragraph.</P></ACTION>'
+    assert len(assist(client, jid, "centre it", ("p2_b2",))["blocks"]) == 1                                 # same words, new layout: offered
+
+
+def test_a_request_about_words_or_structure_gets_the_whole_page(client, assistant):
+    sign_in(client, "tok-a"); jid = upload_and_wait(client)
+    assistant["says"] = "<REPLY>ok</REPLY>"
+    assist(client, jid, "check this against the image and correct it", ("p2_b2",))
+    assert n_images(assistant) == 2 and "the whole page and a crop" in prompt_text(assistant)
+    assist(client, jid, "merge these", ("p2_b1", "p2_b2"))
+    assert n_images(assistant) == 1 + 2
+
+
+def test_the_fast_provider_option_is_tried_first_and_dropped_if_refused(client, monkeypatch):
+    import requests
+    from conftest import FakeResp
+    sent = []
+
+    def post(url, *a, **kw):
+        body = kw.get("json") or {}
+        sent.append(body)
+        if "provider" in body:
+            r = FakeResp({}); r.status_code = 400
+            return r
+        return FakeResp({"choices": [{"message": {"content": "<REPLY>fine</REPLY>"}, "finish_reason": "stop"}], "usage": {"prompt_tokens": 1, "completion_tokens": 1, "cost": 0.0}, "model": body.get("model")})
+    monkeypatch.setattr(requests, "post", post)
+    sign_in(client, "tok-a"); jid = upload_and_wait(client)
+    p = assist(client, jid, "what is this?", ("p2_b2",))
+    assert [("provider" in b) for b in sent] == [True, False] and p["message"] == "fine" and "seconds" in p["usage"]
+
+
+def test_a_reply_never_shows_tags(client, assistant):
+    sign_in(client, "tok-a"); jid = upload_and_wait(client)
+    assistant["says"] = '<REPLY><ACTION type="delete" ids="p2_b1"/></REPLY>'
+    p = assist(client, jid, "remove it", ("p2_b1",))
+    assert "<" not in p["message"] and p["message"] == "Here is what I propose." and p["blocks"][0]["kind"] == "delete"
+    assistant["says"] = '<REPLY>I will delete it.<ACTION type="delete" ids="p2_b1"/>'            # no closing tag
+    assert assist(client, jid, "remove it", ("p2_b1",))["message"] == "I will delete it."
+
+
+def test_delete_plus_insert_becomes_an_edit_in_place(client, assistant):
+    sign_in(client, "tok-a"); jid = upload_and_wait(client)
+    assistant["says"] = '<ACTION type="delete" ids="p2_b2"/><ACTION type="insert" after="p2_b1"><P align="center">Next paragraph.</P></ACTION>'
+    p = assist(client, jid, "centre it", ("p2_b2",))
+    (c,) = p["blocks"]
+    assert c["kind"] == "edit" and c["ids"] == ["p2_b2"]                                        # same block, so it keeps its box on the page
+    client.post(f"/api/jobs/{jid}/proposals/{p['id']}/accept", json={})
+    d = doc(client, jid)
+    assert d["blocks"]["p2_b2"]["markup"] == '<P align="center">Next paragraph.</P>' and not any("_n" in i for i in d["order"])
+    assert d["blocks"]["p2_b2"]["bbox_norm"] == [x for x in BLOCKS[5]["bbox_norm"]] if "bbox_norm" in BLOCKS[5] else True
+
+
+def test_a_block_that_is_not_selected_cannot_be_changed(client, assistant):
+    sign_in(client, "tok-a"); jid = upload_and_wait(client)
+    assistant["says"] = '<ACTION type="edit" id="p2_b1"><P>x</P></ACTION>'
+    p = assist(client, jid, "fix", ("p2_b2",))
+    assert p["blocks"] == [] and "is not selected" in p["skipped"][0]["reason"]
+
+
+def test_a_picture_or_empty_block_can_be_read_from_its_crop_by_the_assistant(client, assistant):
+    sign_in(client, "tok-a"); jid = upload_and_wait(client)
+    store.push(jid, {"op": "set_fields", "block": "p2_b2", "fields": {"is_picture": True, "formatted_text": ""}})
+    assistant["says"] = '<REPLY>Read it.</REPLY><ACTION type="edit" id="p2_b2"><P>Text printed in the crop</P></ACTION>'
+    p = assist(client, jid, "read this block again from the image", ("p2_b2",))
+    (c,) = p["blocks"]
+    assert c["label"] == "read from image" and c["warn"] is None and c["fields"]["is_picture"] is False
+    client.post(f"/api/jobs/{jid}/proposals/{p['id']}/accept", json={})
+    b = {x["block_id"]: x for x in store.current_blocks(jid)}["p2_b2"]
+    assert b["is_picture"] is False and b["bodhan_type"] == "Text" and b["formatted_text"] == "<P>Text printed in the crop</P>"
+
+
+def test_an_answer_that_was_cut_off_is_an_error_and_long_hindi_blocks_get_room(client, assistant):
+    sign_in(client, "tok-a"); jid = upload_and_wait(client)
+    assistant["says"] = '<ACTION type="edit" id="p2_b2"><P>Next para'
+    assistant["finish"] = "length"
+    r = assist(client, jid, "centre it", ("p2_b2",))
+    assert r.status_code == 422 and "cut off" in r.json()["detail"]
+    assistant["finish"] = "stop"
+    store.push(jid, {"op": "set_fields", "block": "p2_b2", "fields": {"formatted_text": "<P>" + "प्रश्न " * 400 + "</P>"}})
+    assist(client, jid, "centre it", ("p2_b2",))
+    assert assistant["sent"][-1]["max_tokens"] >= 1500 + 2 * 2800                       # about 2,800 characters of Hindi need about that many tokens
+
+
+def test_the_assistant_model_and_answer_length_can_be_set(client, assistant, monkeypatch):
+    sign_in(client, "tok-a"); jid = upload_and_wait(client)
+    assistant["says"] = "<REPLY>ok</REPLY>"
+    assist(client, jid, "what is this?", ("p2_b2",))
+    assert assistant["sent"][-1]["model"] == GPT and assistant["sent"][-1]["max_tokens"] == 1500 + 2 * len(BLOCKS[5]["formatted_text"])   # defaults
+    monkeypatch.setattr(config, "ASSIST_MODEL", "google/gemini-2.5-flash")
+    monkeypatch.setattr(config, "ASSIST_MAX_TOKENS", 3333)
+    p = assist(client, jid, "what is this?", ("p2_b2",))
+    assert assistant["sent"][-1]["model"] == "google/gemini-2.5-flash" and assistant["sent"][-1]["max_tokens"] == 3333 and p["model"] == "google/gemini-2.5-flash"
+
+
+REAL = ('<TABLE border="1"><ROW header="true"><CELL><P>explained Reason (R).<BR/>d) Both are true</P></CELL></ROW>'
+        '<ROW><CELL><TABLE border="1"><ROW><CELL colspan="2"><P align="center" bold="true" size="11">VERY SHORT ANSWER TYPE QUESTIONS<BR/>(2 MARKS EACH)</P></CELL></ROW></TABLE></CELL></ROW>'
+        '<ROW><CELL><P>\u092a\u094d\u0930\u0936\u094d\u0928 16 \u0921\u0942\u0930\u0923\u094d\u0921 \u0915\u092a<BR/>(\u0905\u0925\u0935\u093e)</P></CELL></ROW>'
+        '<ROW><CELL>plain text cell</CELL></ROW></TABLE>')
+
+
+def put_table(jid, block="p2_b2"):
+    store.push(jid, {"op": "set_fields", "block": block, "fields": {"formatted_text": REAL}})
+
+
+def test_removing_a_table_outline_is_done_in_code_with_no_model_call(client, assistant):
+    sign_in(client, "tok-a"); jid = upload_and_wait(client)
+    put_table(jid)
+    p = assist(client, jid, "I want you remove the table outline just keep the inside text intact and structure", ("p2_b2",))
+    assert assistant["sent"] == [] and p["model"] == "built in" and p["usage"]["calls"] == 0                 # no model was asked
+    (c,) = p["blocks"]
+    assert c["label"] == "table outline removed" and c["warn"] is None
+    after = c["after"]
+    assert after.count("<TABLE") == 1 and "<ROW" in after and after.lstrip().startswith('<P bold="true">')   # the outer outline is gone; the heading box inside stays; the header row stays bold
+    assert "<P>plain text cell</P>" in after
+    assert client.post(f"/api/jobs/{jid}/proposals/{p['id']}/accept", json={}).status_code == 200
+    assert doc(client, jid)["blocks"]["p2_b2"]["markup"] == after
+    client.post(f"/api/jobs/{jid}/undo")
+    assert doc(client, jid)["blocks"]["p2_b2"]["markup"] == REAL
+
+
+def test_all_table_outlines_can_be_removed_and_the_words_never_change(client, assistant):
+    import re
+    from ocr import ops
+    sign_in(client, "tok-a"); jid = upload_and_wait(client)
+    put_table(jid)
+    p = assist(client, jid, "remove all table outlines", ("p2_b2",))
+    (c,) = p["blocks"]
+    assert "<TABLE" not in c["after"] and "kept" not in p["message"] and ops._same_words(c["after"], REAL)
+    assert "kept" in assist(client, jid, "remove the outside table border", ("p2_b2",))["message"]           # the default keeps tables inside cells
+
+
+def test_the_outline_request_goes_to_the_model_when_there_is_no_table_or_the_words_differ(client, assistant):
+    sign_in(client, "tok-a"); jid = upload_and_wait(client)
+    assistant["says"] = "<REPLY>There is no table here.</REPLY>"
+    p = assist(client, jid, "remove the table outline", ("p2_b2",))                                          # p2_b2 has no table: ask the model
+    assert len(assistant["sent"]) == 1 and p["message"] == "There is no table here."
+    put_table(jid)
+    assistant["says"] = '<ACTION type="unwrap" id="P2_B2" all="true"/>'                                       # other wording: the model picks the same exact operation
+    p = assist(client, jid, "make this plain paragraphs, no grid", ("p2_b2",))
+    assert len(assistant["sent"]) == 2 and "<TABLE" not in p["blocks"][0]["after"]
+    assistant["says"] = '<ACTION type="unwrap" id="p2_b1"/>'
+    assert "has no table" in assist(client, jid, "make this plain paragraphs, no grid", ("p2_b1",))["skipped"][0]["reason"]
+
+
+def test_words_of_a_table_survive_the_outline_removal_in_the_word_file(client, assistant):
+    """The Word file of the outline-free block has the same text as the Word file of the table."""
+    from ocr import ops
+    old, new = REAL, ops._unwrap_all(REAL)
+    import re
+    flat = lambda m: re.sub(r"\s+", "", re.sub(r"<[^>]+>", "", m))
+    assert flat(old) == flat(new)
+
+def by_id(jid):
+    return {b["block_id"]: b for b in store.current_blocks(jid)}
+
+
+def accept_all(client, jid, p):
+    r = client.post(f"/api/jobs/{jid}/proposals/{p['id']}/accept", json={})
+    assert r.status_code == 200, r.text
+    return r
+
+
+def merge(client, assistant, jid, ids, note="merge these", words=MERGED):
+    assistant["says"] = f'<REPLY>Joined.</REPLY><ACTION type="merge" ids="{",".join(ids)}">{words}</ACTION>'
+    p = assist(client, jid, note, ids)
+    accept_all(client, jid, p)
+    return p
+
+
+def test_merging_two_blocks_gives_one_new_block_in_their_place_and_one_undo(client, assistant):
+    sign_in(client, "tok-a"); jid = upload_and_wait(client)
+    before = doc(client, jid)["order"]
+    assistant["says"] = f'<REPLY>The sentence continues, so I joined them.</REPLY>\n<ACTION type="merge" ids="p2_b1,p1_b4">\n{MERGED}\n</ACTION>'
+    p = assist(client, jid, "we should combine these two, flow continuation", ("p2_b1", "p1_b4"))
+    (c,) = p["blocks"]
+    assert c["kind"] == "merge" and c["ids"] == ["p1_b4", "p2_b1"] and c["warn"] is None and c["after"] == MERGED     # reading order, not click order
+    assert doc(client, jid)["blocks"]["p2_b1"]                                                                          # nothing changed yet
+    accept_all(client, jid, p)
+    d = doc(client, jid)
+    assert "p1_b4" not in d["order"] and "p2_b1" not in d["order"]
+    (new,) = [i for i in d["order"] if i not in before]
+    assert new == "p1_b4_b1" and d["order"].index(new) == before.index("p1_b4") and d["blocks"][new]["markup"] == MERGED   # the pieces' ids joined; the first piece's place
+    client.post(f"/api/jobs/{jid}/undo")
+    d = doc(client, jid)
+    assert d["order"] == before and d["blocks"]["p1_b4"]["markup"] == BLOCKS[3]["formatted_text"]
+
+
+def test_a_merge_grows_the_box_names_its_parts_and_can_be_split_back(client, assistant):
+    sign_in(client, "tok-a"); jid = upload_and_wait(client)
+    original = {i: b for i, b in by_id(jid).items() if i in ("p1_b2", "p1_b3")}
+    before = doc(client, jid)["order"]
+    merge(client, assistant, jid, ("p1_b2", "p1_b3"), "merge these two, they are side by side", "<P>State Ohms law. Quantity Symbol Current I</P>")
+    m = by_id(jid)["p1_b2_b3"]
+    assert m["bbox_norm"] == [.1, .15, .9, .55] and [a["block_id"] for a in m["merged_from"]] == ["p1_b2", "p1_b3"]      # the box covers both pieces
+    assert doc(client, jid)["blocks"]["p1_b2_b3"]["bbox_norm"] == [.1, .15, .9, .55]
+
+    assistant["says"] = "<REPLY>ok</REPLY>"
+    assist(client, jid, "now move the gap", ("p1_b2_b3",))                                  # a follow-up on the NEW name
+    t = prompt_text(assistant)
+    assert 'parts="p1_b2 [page 1' in t and "p1_b3 [page 1" in t and "CONTEXT OF EACH SELECTED BLOCK (what" in t and "EARLIER IN THIS SESSION" not in t
+    assert "p1_b2_b3:" in t and "merge these two, they are side by side" in t and "merged p1 \u00b7 B2, p1 \u00b7 B3 into the new block p1 \u00b7 B2_B3" in t
+
+    assistant["says"] = '<ACTION type="split" id="p1_b2_b3"/>'
+    p = assist(client, jid, "split them again", ("p1_b2_b3",))
+    (c,) = p["blocks"]
+    assert c["kind"] == "split"
+    accept_all(client, jid, p)
+    now, order = by_id(jid), doc(client, jid)["order"]
+    assert order == before and "p1_b2_b3" not in now
+    for i in ("p1_b2", "p1_b3"):
+        assert now[i]["bbox_norm"] == original[i]["bbox_norm"] and now[i]["formatted_text"] == original[i]["formatted_text"] and not now[i].get("merged_from")
+    client.post(f"/api/jobs/{jid}/undo")                                                    # undo the split: merged again, in one step
+    assert "p1_b2_b3" in doc(client, jid)["order"] and "p1_b3" not in doc(client, jid)["order"]
+
+
+def test_merging_across_pages_keeps_the_first_box_and_sends_the_other_part_as_a_crop(client, assistant):
+    sign_in(client, "tok-a"); jid = upload_and_wait(client)
+    merge(client, assistant, jid, ("p1_b4", "p2_b1"), "the sentence continues on the next page")
+    b = by_id(jid)["p1_b4_b1"]
+    assert b["page"] == 1 and b["bbox_norm"] == [.1, .85, .9, .95] and [a["page"] for a in b["merged_from"]] == [1, 2]
+    assistant["says"] = "<REPLY>ok</REPLY>"
+    assist(client, jid, "check it", ("p1_b4_b1",))
+    kinds = [c.get("type") for c in assistant["sent"][-1]["messages"][0]["content"]]
+    assert kinds.count("image_url") == 1 + 1 + 1                                            # page 1, the block's crop, the part on page 2
+
+
+def test_ids_are_matched_without_case_and_a_merged_away_block_is_explained(client, assistant):
+    sign_in(client, "tok-a"); jid = upload_and_wait(client)
+    assistant["says"] = f'<ACTION type="merge" ids="P1_B2, p1_B3">{MERGED}</ACTION>'            # the model wrote the ids in another case
+    p = assist(client, jid, "merge", ("p1_b2", "p1_b3"))
+    assert [c["ids"] for c in p["blocks"]] == [["p1_b2", "p1_b3"]]
+    accept_all(client, jid, p)
+    assistant["says"] = '<ACTION type="merge" ids="p1_b2_b3,P1_B3"><P>again</P></ACTION>'       # B3 was merged away: asked for again
+    p = assist(client, jid, "there is a gap between them", ("p1_b2_b3",))
+    assert p["blocks"] == [] and "no longer exists: it was merged into p1 \u00b7 B2_B3" in p["skipped"][0]["reason"]
+
+
+def test_a_merged_block_has_the_context_of_both_pieces_in_order_and_each_piece_has_the_merge(client, assistant):
+    sign_in(client, "tok-a"); jid = upload_and_wait(client)
+    for blk, note in (("p1_b2", "first thing about B2"), ("p1_b3", "then something about B3")):
+        assistant["says"] = f'<REPLY>Done {blk}.</REPLY><ACTION type="edit" id="{blk}"><P align="center">{blk}</P></ACTION>'
+        accept_all(client, jid, assist(client, jid, note, (blk,)))
+    assert [e["asked"] for e in by_id(jid)["p1_b2"]["context"]] == ["first thing about B2"]                    # kept on the block itself
+    merge(client, assistant, jid, ("p1_b2", "p1_b3"), "now join them")
+    m = by_id(jid)["p1_b2_b3"]
+    assert [e["asked"] for e in m["context"]] == ["first thing about B2", "then something about B3", "now join them"]   # both, in order, the merge once
+    assert [e["said"] for e in m["context"]][:2] == ["Done p1_b2.", "Done p1_b3."]
+    for atom in m["merged_from"]:                                                                              # the merge is in B2's context and in B3's context
+        assert atom["context"][-1]["asked"] == "now join them" and atom["context"][-1]["did"].startswith("merged p1 \u00b7 B2, p1 \u00b7 B3 into the new block")
+    assert len({e["eid"] for e in m["context"]}) == 3
+
+
+def test_a_split_gives_each_piece_its_own_context_back_plus_what_happened_since(client, assistant):
+    sign_in(client, "tok-a"); jid = upload_and_wait(client)
+    assistant["says"] = '<ACTION type="edit" id="p1_b2"><P align="center">x</P></ACTION>'
+    accept_all(client, jid, assist(client, jid, "tidy B2", ("p1_b2",)))
+    merge(client, assistant, jid, ("p1_b2", "p1_b3"), "join")
+    assistant["says"] = '<ACTION type="edit" id="p1_b2_b3"><P align="right">y</P></ACTION>'
+    accept_all(client, jid, assist(client, jid, "tidy the merged one", ("p1_b2_b3",)))
+    assistant["says"] = '<ACTION type="split" id="p1_b2_b3"/>'
+    accept_all(client, jid, assist(client, jid, "split", ("p1_b2_b3",)))
+    now = by_id(jid)
+    assert [e["asked"] for e in now["p1_b2"]["context"]] == ["tidy B2", "join", "tidy the merged one", "split"]
+    assert [e["asked"] for e in now["p1_b3"]["context"]] == ["join", "tidy the merged one", "split"]    # B3 never had its own earlier entry
+
+
+def test_merging_a_merged_block_keeps_every_original_piece_and_one_flat_name(client, assistant):
+    sign_in(client, "tok-a"); jid = upload_and_wait(client)
+    merge(client, assistant, jid, ("p1_b2", "p1_b3"), "first join")
+    merge(client, assistant, jid, ("p1_b2_b3", "p1_b4"), "second join")
+    m = by_id(jid)["p1_b2_b3_b4"]
+    assert [a["block_id"] for a in m["merged_from"]] == ["p1_b2", "p1_b3", "p1_b4"]
+    assert [e["asked"] for e in m["context"]] == ["first join", "second join"]
+    assert all(a["context"][-1]["asked"] == "second join" for a in m["merged_from"])
+
+
+def test_the_model_sees_only_the_context_of_the_selected_blocks_and_rejections(client, assistant):
+    sign_in(client, "tok-a"); jid = upload_and_wait(client)
+    assistant["says"] = "<REPLY>ok</REPLY>"
+    assist(client, jid, "first", ("p1_b2",))
+    assert "CONTEXT OF EACH SELECTED BLOCK (what" not in prompt_text(assistant)                                   # nothing yet: no section
+    assistant["says"] = '<ACTION type="edit" id="p1_b2"><P align="center">x</P></ACTION>'
+    accept_all(client, jid, assist(client, jid, "the B2 request", ("p1_b2",)))
+    assistant["says"] = '<ACTION type="edit" id="p1_b3"><P align="right">y</P></ACTION>'
+    p = assist(client, jid, "the rejected B3 request", ("p1_b3",))
+    client.post(f"/api/jobs/{jid}/proposals/{p['id']}/reject", json={})
+    assistant["says"] = "<REPLY>ok</REPLY>"
+    assist(client, jid, "look at both", ("p1_b2", "p1_b3"))
+    t = prompt_text(assistant)
+    assert "p1_b2:\n- asked \u00abthe B2 request\u00bb" in t and "the rejected B3 request" in t and "REJECTED" in t
+    assist(client, jid, "only B4", ("p1_b4",))
+    assert "the B2 request" not in prompt_text(assistant) and "rejected B3" not in prompt_text(assistant)         # other blocks' context is not mixed in
+
+
+def test_undo_takes_the_context_away_with_the_edit(client, assistant):
+    sign_in(client, "tok-a"); jid = upload_and_wait(client)
+    assistant["says"] = '<ACTION type="edit" id="p1_b2"><P align="center">x</P></ACTION>'
+    accept_all(client, jid, assist(client, jid, "tidy it", ("p1_b2",)))
+    assert len(by_id(jid)["p1_b2"]["context"]) == 1
+    client.post(f"/api/jobs/{jid}/undo")
+    assert not by_id(jid)["p1_b2"].get("context")
+    client.post(f"/api/jobs/{jid}/redo")
+    assert by_id(jid)["p1_b2"]["context"][0]["asked"] == "tidy it"
+
+
+def test_a_split_is_refused_if_an_original_id_has_been_taken(client, assistant):
+    sign_in(client, "tok-a"); jid = upload_and_wait(client)
+    merge(client, assistant, jid, ("p1_b2", "p1_b3"), "join")
+    assistant["says"] = '<ACTION type="split" id="p1_b2_b3"/>'
+    p = assist(client, jid, "split", ("p1_b2_b3",))
+    store.push(jid, {"op": "add_block", "index": 0, "block": {"block_id": "p1_b3", "page": 1, "formatted_text": "<P>taken</P>"}})
+    r = client.post(f"/api/jobs/{jid}/proposals/{p['id']}/accept", json={})
+    assert r.status_code == 409 and "already exists" in r.json()["detail"]
+
+
+def test_merged_ids_are_readable_unique_and_never_confused_with_another_block():
+    from ocr import ops
+    assert ops._merged_id(["p1_B1", "p1_B2"], 1, ["p1_B1", "p1_B2"]) == "p1_B1_B2"
+    assert ops._merged_id(["p1_B1_B2"], 1, ["p1_B1", "p1_B2"]) == "p1_B1_B2_2"                                  # a second block with the same pieces
+    assert ops._merged_id(["p1_B12"], 1, ["p1_B1", "p1_B2"]) == "p1_B1_B2"                                        # B1+B2 is not B12
+    assert ops._merged_id([], 3, [f"p3_B{i}" for i in range(1, 11)]) == "p3_B1_B2_B3_plus7"                      # long names are shortened
+    assert ops._merged_id([], 2, ["p2_n1", "p2_u1"]) == "p2_n1_u1"

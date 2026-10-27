@@ -165,7 +165,7 @@ export const extensions: Extensions = [
   }),
   TableRow.extend({ content: 'tableCell+', addAttributes() { return rowAttrs } }),
   TableCell.extend({
-    content: 'paragraph+',
+    content: '(paragraph | list | options | table)+',
     addAttributes() {
       return {
         ...this.parent?.(),

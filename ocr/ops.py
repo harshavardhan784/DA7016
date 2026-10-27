@@ -3,10 +3,11 @@ its state in global variables (one PDF, one set of counters) and cannot share a 
 
     python -m ocr.ops <rebuild|review|newbox|assist> <job_dir> <request.json> <result.json>
 
-Everything that is pipeline logic comes from the notebook (see nb.py); this file only wires it up.
+Everything that is pipeline logic comes from the stage files in pipeline/ (see pipeline/runtime.py); this file only wires it up.
 """
 import contextlib
 import copy
+import time
 import html
 import io
 import json
@@ -20,10 +21,8 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from . import store
-from . import config
-from . import nb
-from . import prompts
+from pipeline import runtime as nb
+from . import config, prompts, store
 
 NOTE_MARKER = "Now process the chunk below."
 FORMAT_TAIL = "\n\n\nNow process the chunk below.\n\nINPUT:"
@@ -215,7 +214,7 @@ def review_model(ns):
     """The model for every review call: the Qwen model the notebook already names (stage 'classify')."""
     m = ns["M"].get("classify")
     if not m:
-        raise nb.NotebookError("notebook changed: no 'classify' model to use for review")
+        raise nb.PipelineError("pipeline changed: no 'classify' model to use for review")
     return m
 
 
@@ -232,7 +231,7 @@ def _configure(ns, note, model, mode):
     elif note:                                            # Re-read keeps the notebook's own prompt; the note is only a hint
         p = ns["COMBINED_PROMPT"]
         if p.count(NOTE_MARKER) != 1:
-            raise nb.NotebookError("notebook changed: the formatting prompt no longer has its closing instruction")
+            raise nb.PipelineError("pipeline changed: the formatting prompt no longer has its closing instruction")
         ns["COMBINED_PROMPT"] = p.replace(NOTE_MARKER, prompts.load("reread_hint.txt").replace("{note}", note) + "\n\n" + NOTE_MARKER)
 
 
@@ -262,7 +261,8 @@ def _format_all(ns, items):
 def _usage(ns):
     calls = [c for c in ns["CALLS"] if c["engine"] != "_wallclock_"]
     return {"calls": len(calls), "tok_in": sum(c["tok_in"] for c in calls),
-            "tok_out": sum(c["tok_out"] for c in calls), "cost": round(sum((c["cost"] or 0) for c in calls), 6)}
+            "tok_out": sum(c["tok_out"] for c in calls), "cost": round(sum((c["cost"] or 0) for c in calls), 6),
+            "seconds": round(sum(c["seconds"] for c in calls), 1)}
 
 
 def review(job_dir, req):
@@ -357,6 +357,124 @@ _PAIRED = ("P", "LIST", "ITEM", "OPTIONS", "OPTION", "TABLE", "ROW", "CELL", "ST
 _ACTION_RE = re.compile(r"<ACTION\b([^>]*?)\s*/>|<ACTION\b([^>]*)>(.*?)</ACTION>", re.S | re.I)
 
 
+_PAGE_WORDS = re.compile(r"\b(re-?read|check\w*|verif\w*|compar\w*|match\w*|correct\w*|wrong|incorrect|missing|mis-?read|mis-?spell\w*|spelling|typos?|ocr|merg\w*|combin\w*|join\w*|split\w*|insert\w*|add\w*|delet\w*|order|move|swap|translat\w*)\b", re.I)
+_LAYOUT_WORDS = re.compile(r"\b(format\w*|layout|align\w*|cent(?:er|re)\w*|left|right|justif\w*|bold|italic\w*|underlin\w*|head(?:ing|er)s?|title|lists?|bullet\w*|number(?:ed|ing)|tables?|outlines?|borders?|lines?|rows?|columns?|cells?|indent\w*|spacing|gap|font|size|paragraphs?|colou?r)\b", re.I)
+
+
+def _scope(note):
+    """'layout' when the request is only about how blocks look (then: block crops only, and the words are locked), else 'other'.
+    Only decides what is sent and what is checked; the model still decides what to do."""
+    return "layout" if _LAYOUT_WORDS.search(note) and not _PAGE_WORDS.search(note) else "other"
+
+
+def _chat_fast(ns, model, content, max_tokens):
+    """One model call that fails fast: the notebook's helper waits up to ~85 s in back-off, too long for a person at the screen.
+    First asks OpenRouter for its fastest provider; if that option is refused, or the call fails, one plain retry after 2 s."""
+    import time
+    import requests
+    head = {"Authorization": f"Bearer {ns['OPENROUTER_KEY']}", "Content-Type": "application/json"}
+    body = {"model": model, "temperature": 0.0, "max_tokens": max_tokens, "messages": [{"role": "user", "content": content}]}
+    last = None
+    for k, extra in enumerate(({"provider": {"sort": "throughput"}}, {}, {})):
+        try:
+            r = requests.post(ns["OPENROUTER_URL"], headers=head, json={**body, **extra}, timeout=(10, 100))
+            if r.status_code == 402:
+                raise RuntimeError("HTTP 402: OpenRouter credits exhausted")
+            if r.status_code in (400, 404, 422) and extra:               # the provider option was not accepted: go straight to a plain call
+                last = RuntimeError(f"HTTP {r.status_code}")
+                continue
+            if r.status_code == 429 or r.status_code >= 500:
+                last = RuntimeError(f"HTTP {r.status_code} from {model}")
+                time.sleep(2)
+                continue
+            r.raise_for_status()
+            data = r.json()
+            if "error" in data:
+                last = RuntimeError(str(data["error"])[:200])
+                time.sleep(2)
+                continue
+            return data["choices"][0]["message"]["content"] or "", data["choices"][0].get("finish_reason")
+        except requests.RequestException as e:
+            last = e
+            time.sleep(2)
+    raise RuntimeError(f"the model did not answer ({last}); try again")
+
+
+# ── removing a table's outline: an exact operation, done in code (a model retyping a long table drops words and takes half a minute) ──
+_TABLE_TAGS = re.compile(r"<(/?)(TABLE|ROW|CELL)\b([^<>]*?)(/?)>", re.I)
+_BLOCKISH = re.compile(r"<(P|ITEM|OPTIONS|OPTION|LIST|TABLE|QUESTION)\b", re.I)
+_KEEP_ON_P = ("align", "bold", "italic", "underline", "size", "font", "color")
+_TABLE_WORD = re.compile(r"\btables?\b", re.I)
+_OUTLINE_WORD = re.compile(r"\b(outlines?|borders?|grid|gridlines?|frame|boxe?s?)\b", re.I)
+_REMOVE_WORD = re.compile(r"\b(remov\w*|delet\w*|drop|hide|without|get\s+rid|take\s+(?:off|away)|clear|no\s+need|not\s+(?:required|requried|needed|necessary))\b", re.I)
+_ALL_TABLES = re.compile(r"\b(?:all|every)\s+(?:the\s+)?(?:table|outline|border)s?\b|\bnested\b|\binner\b", re.I)
+
+
+def _wants_unwrap(note):
+    """The request is to take the outline off a table and keep what is inside."""
+    return bool(_TABLE_WORD.search(note) and _OUTLINE_WORD.search(note) and _REMOVE_WORD.search(note))
+
+
+def _cell_blocks(content, attrs, header):
+    """What one cell becomes once its table is gone: its own paragraphs, or its plain text as one paragraph."""
+    inner = content.strip()
+    if not inner:
+        return ""
+    if _BLOCKISH.search(inner):
+        if header:
+            inner = re.sub(r"<P\b(?![^>]*\bbold=)([^>]*)>", r'<P bold="true"\1>', inner)       # a header row is bold in the Word file
+        return inner + "\n"
+    keep = [f'{k}="{v}"' for k, v in re.findall(r'([A-Za-z_]+)\s*=\s*"([^"]*)"', attrs) if k.lower() in _KEEP_ON_P]
+    if header and not any(k.startswith("bold=") for k in keep):
+        keep.append('bold="true"')
+    return f"<P{' ' + ' '.join(keep) if keep else ''}>{inner}</P>\n"
+
+
+def _unwrap_outer(markup):
+    """Take the outline off the outer table(s): rows and cells disappear, each cell's content stays, in reading order.
+    A table nested inside a cell is kept as it is."""
+    out, cell, pos, depth, header, cell_attrs = [], None, 0, 0, False, ""
+
+    def put(s):
+        (cell if cell is not None else out).append(s)
+
+    for m in _TABLE_TAGS.finditer(markup):
+        put(markup[pos:m.start()])
+        pos = m.end()
+        close, name, attrs, selfclose = m.group(1), m.group(2).upper(), m.group(3), m.group(4)
+        if name == "TABLE":
+            if not close:
+                depth += 1
+                if depth > 1:
+                    put(m.group(0))
+            else:
+                if depth > 1:
+                    put(m.group(0))
+                depth = max(0, depth - 1)
+        elif depth == 1:                                         # the outer table's own rows and cells: dropped
+            if name == "ROW" and not close:
+                header = bool(re.search(r'header\s*=\s*"?(true|1|yes)', attrs, re.I))
+            elif name == "CELL" and not selfclose:
+                if not close:
+                    cell, cell_attrs = [], attrs
+                elif cell is not None:
+                    out.append(_cell_blocks("".join(cell), cell_attrs, header))
+                    cell = None
+        else:
+            put(m.group(0))
+    put(markup[pos:])
+    return re.sub(r"\n{3,}", "\n\n", "".join(out)).strip()
+
+
+def _unwrap_all(markup):
+    """The same, until no table is left (tables nested in cells included)."""
+    for _ in range(6):
+        if not re.search(r"<TABLE\b", markup, re.I):
+            break
+        markup = _unwrap_outer(markup)
+    return markup
+
+
 def _lab(block_id):
     """'p4_b10' -> 'p4 · B10' (the way the screen names a block)."""
     return re.sub(r"^p(\d+)_(.*)$", lambda m: f"p{m.group(1)} \u00b7 {m.group(2).upper()}", block_id)
@@ -378,12 +496,68 @@ def _clean_markup(raw):
     return m
 
 
-_ATOM_KEYS = ("block_id", "page", "bbox_xyxy", "bbox_norm", "bodhan_type", "is_picture", "image_path", "formatted_text", "text", "page_wh")
+_ATOM_KEYS = ("block_id", "page", "bbox_xyxy", "bbox_norm", "bodhan_type", "is_picture", "image_path", "formatted_text", "text", "page_wh", "context")
+CTX_KEEP = 12       # entries kept on a block
+CTX_SHOW = 8        # entries shown to the model per block
 
 
-def _atoms(b):
-    """The original pieces behind a block: itself, or what earlier merges joined into it (kept flat, so a split always restores the originals)."""
-    return copy.deepcopy(b["merged_from"]) if b.get("merged_from") else [{k: b[k] for k in _ATOM_KEYS if k in b}]
+def _atom_ids(b):
+    """Ids of the original pieces behind a block: itself, or what earlier merges joined into it."""
+    return [a["block_id"] for a in b["merged_from"]] if b.get("merged_from") else [b["block_id"]]
+
+
+def _flat(x, n=200):
+    return re.sub(r"\s+", " ", str(x or "")).strip()[:n]
+
+
+def _entry(eid, asked, said, did):
+    """One line of a block's context: what was asked, what the assistant said, what was done. `eid` is unique, so the same entry is never listed twice."""
+    return {"eid": eid, "t": round(time.time(), 3), "asked": _flat(asked), "said": _flat(said), "did": _flat(did)}
+
+
+def _ctx_add(ctx, entry):
+    return ([e for e in (ctx or []) if e.get("eid") != entry["eid"]] + [entry])[-CTX_KEEP:]
+
+
+def _ctx_join(*lists):
+    """The contexts of several blocks as one, oldest first, each entry once."""
+    seen, out = set(), []
+    for lst in lists:
+        for e in lst or []:
+            if e.get("eid") not in seen:
+                seen.add(e.get("eid"))
+                out.append(e)
+    out.sort(key=lambda e: e.get("t", 0))
+    return out[-CTX_KEEP:]
+
+
+def _atoms_with_context(b, entry):
+    """The original pieces behind a block, as they were when merged (flat, so a split always restores the originals), each with its own
+    context plus `entry`. A block that was merged before and has since got more context passes that on to every piece."""
+    ctx = b.get("context") or []
+    if b.get("merged_from"):
+        atoms = copy.deepcopy(b["merged_from"])
+        known = {e.get("eid") for a in atoms for e in (a.get("context") or [])}
+        extra = [e for e in ctx if e.get("eid") not in known]
+        for a in atoms:
+            a["context"] = _ctx_join(a.get("context"), extra, [entry])
+        return atoms
+    atom = {k: b[k] for k in _ATOM_KEYS if k in b}
+    atom["context"] = _ctx_join(ctx, [entry])
+    return [atom]
+
+
+def _merged_id(existing, page, atom_ids):
+    """The id of a merged block: its pieces' ids joined (p1_B1_B2), made unique. It cannot be mistaken for another block's id."""
+    tails = [re.sub(r"^p\d+_", "", a) for a in atom_ids]
+    name = "_".join(tails)
+    if len(name) > 24:
+        name = "_".join(tails[:3]) + f"_plus{len(tails) - 3}"
+    base, taken = f"p{page}_{name}", set(existing) | {_key(i) for i in existing}
+    cand, n = base, 2
+    while cand in taken or _key(cand) in taken:
+        cand, n = f"{base}_{n}", n + 1
+    return cand
 
 
 def _same_bag(a, b):
@@ -392,15 +566,44 @@ def _same_bag(a, b):
     return f(a) == f(b)
 
 
-def _history_text(d, limit=6):
-    """What was asked and decided earlier in this document, from the saved proposals (so it follows undo/accept/reject)."""
+def _card_said(c, new_id=None):
+    """One card in plain words for a block's context (a merge names the new block and says the pieces no longer exist)."""
+    ids = c.get("ids") or []
+    kind = c.get("kind")
+    if kind == "merge" and len(ids) > 1:
+        return (f"merged {', '.join(_lab(x) for x in ids)} into the new block {_lab(new_id)}" if new_id
+                else f"merge {', '.join(_lab(x) for x in ids)} into one new block") + " (the pieces no longer exist on their own)"
+    if kind == "split" and ids:
+        return f"split {_lab(ids[0])} back into its parts"
+    if kind == "insert" and ids:
+        return f"new block after {_lab(ids[0])}"
+    if kind in ("edit", "delete") and ids:
+        return f"{kind} {_lab(ids[0])}"
+    return c.get("title") or _lab(c["id"])
+
+
+def _key(x):
+    """Block ids compare without case or punctuation: p1_B6, P1_b6 and 'p1 · B6' are the same block."""
+    return re.sub(r"[^a-z0-9]", "", str(x or "").lower())
+
+
+def _context_text(d, by, ids):
+    """The context of each selected block, oldest first. Accepted requests are kept on the block itself (so Undo takes them away, and a
+    merged block carries the context of every block it was made from, in order). Rejected ones come from the saved proposals."""
     rows = [p for p in (store.read_json(f) for f in (d / "proposals").glob("*.json")) if p]
-    out = []
-    for p in sorted(rows, key=lambda p: p.get("created", 0))[-limit:]:
-        note = (p.get("note") or "").strip() or ("drew a new box" if p.get("mode") == "newbox" else "")
-        cards = "; ".join(f"{c.get('title') or _lab(c['id'])}: {c.get('resolved') or 'pending'}" for c in p.get("blocks", []))
-        out.append(f"- asked \u00ab{note[:160]}\u00bb; answer: {(p.get('message') or '')[:200]}" + (f" [{cards[:300]}]" if cards else ""))
-    return out
+    out, any_ = [], False
+    for i in ids:
+        mine = set(_atom_ids(by[i]))
+        lines = [(e.get("t", 0), f"- asked \u00ab{e.get('asked', '')}\u00bb; answer: {e.get('said', '')}; done: {e.get('did', '')}") for e in by[i].get("context") or []]
+        for p in rows:
+            for c in p.get("blocks", []):
+                if c.get("resolved") == "rejected" and mine & set(c.get("ids") or []):
+                    lines.append((p.get("created", 0), f"- asked \u00ab{_flat(p.get('note'))}\u00bb; proposed: {_card_said(c)}; the person REJECTED it"))
+        lines = [l for _, l in sorted(lines, key=lambda x: x[0])][-CTX_SHOW:]
+        any_ = any_ or bool(lines)
+        out.append(f"{i}:" + ("" if lines else " (nothing yet)"))
+        out.extend(lines)
+    return out if any_ else []
 
 
 def _same_words(a, b):
@@ -412,8 +615,8 @@ def _same_words(a, b):
 def _parse_assist(raw):
     """(reply, [{'type', 'attrs', 'body'}]) from the model's answer. Raises ValueError when nothing can be read."""
     text = raw or ""
-    r = re.search(r"<REPLY>(.*?)</REPLY>", text, re.S | re.I)
-    reply = re.sub(r"\s+", " ", html.unescape(r.group(1))).strip() if r else ""
+    r = re.search(r"<REPLY>(.*?)(?:</REPLY>|<ACTION\b|\Z)", text, re.S | re.I)
+    reply = re.sub(r"\s+", " ", re.sub(r"<[^>]*>", " ", html.unescape(r.group(1)))).strip() if r else ""      # the model sometimes puts an action inside the reply
     actions = []
     for m in _ACTION_RE.finditer(text):
         attrs = dict((k.lower(), v) for k, v in re.findall(r'([A-Za-z_]+)\s*=\s*"([^"]*)"', m.group(1) if m.group(1) is not None else m.group(2)))
@@ -438,7 +641,7 @@ def _assist_pages(by, ids):
     return sorted({by[i]["page"] for i in ids} | {a["page"] for i in ids for a in by[i].get("merged_from") or []})
 
 
-def _assist_content(ns, prompt_text, by, ids, outline_ids, history=()):
+def _assist_content(ns, prompt_text, by, ids, outline_ids, history=(), with_page=True):
     """The message for the model: the prompt, the blocks, a page outline, then the page images and block crops."""
     sel = set(ids)
     parts = ["\n\nSELECTED BLOCKS (the only ones you may edit, merge or delete), in reading order:"]
@@ -457,11 +660,12 @@ def _assist_content(ns, prompt_text, by, ids, outline_ids, history=()):
         preview = "[picture]" if b.get("is_picture") else _words(b.get("formatted_text"))[:60]
         parts.append(f'{i} {"*" if i in sel else "-"} [{b.get("bodhan_type") or "Text"}] "{preview}"')
     if history:
-        parts.append("\nEARLIER IN THIS SESSION (oldest first):\n" + "\n".join(history))
+        parts.append("\nCONTEXT OF EACH SELECTED BLOCK (what was asked and decided about it, oldest first; a merged block carries the context of the blocks it was made from, in order):\n" + "\n".join(history))
+    parts.append("\nIMAGES ATTACHED: " + ("the whole page and a crop of each selected block." if with_page else "a crop of each selected block only."))
     content = [{"type": "text", "text": prompt_text + "\n".join(parts)}]
     pages = _assist_pages(by, ids)
     imgs = {p: ns["preprocess_page"](p - 1) for p in pages}
-    for p in sorted({by[i]["page"] for i in ids}):
+    for p in sorted({by[i]["page"] for i in ids}) if with_page else []:
         content += [{"type": "text", "text": f"Page {p}, the whole page:"},
                     {"type": "image_url", "image_url": {"url": ns["_img_uri"](imgs[p], max_side=1100)}}]
     pad, n = config.CROP_PAD, 0
@@ -502,23 +706,79 @@ def assist(job_dir, req):
     note = (req.get("note") or "").strip()[:1000] or prompts.load("default_instruction.txt").strip()
 
     ns = nb.load()
+    if _wants_unwrap(note):                                                       # exact and instant: no model, no words can change
+        every = bool(_ALL_TABLES.search(note))
+        cards, skipped = [], []
+        for i in ids:
+            old = by[i].get("formatted_text") or ""
+            if by[i].get("is_picture") or not re.search(r"<TABLE\b", old, re.I):
+                continue
+            new = _unwrap_all(old) if every else _unwrap_outer(old)
+            if not new or not _same_words(new, old):
+                skipped.append({"id": i, "reason": "the outline could not be removed without touching the words"})
+                continue
+            cards.append({"id": f"a{len(cards) + 1}", "kind": "edit", "title": _lab(i), "ref": i, "ids": [i], "page": by[i]["page"],
+                          "bbox": _union_bbox([by[i]], ns), "before": old, "after": new, "fields": {"formatted_text": new},
+                          "plain_text_fallback": False, "warn": None, "label": "table outline removed", "expect": {i: old},
+                          "events": [{"op": "set_fields", "block": i, "fields": {"formatted_text": new}}]})
+        if cards:
+            kept = any(re.search(r"<TABLE\b", c["after"], re.I) for c in cards)
+            msg = "Removed the table outline; the text and its structure are unchanged."
+            if kept:
+                msg += ' A table inside a cell was kept; say "remove all table outlines" to remove those too.'
+            print(f"assist {d.name} {ids}: table outline removed in code, no model call")
+            return {"mode": "assist", "note": req.get("note") or "", "model": "built in", "message": msg, "blocks": cards,
+                    "skipped": skipped, "usage": _usage(ns)}
     _need_keys(ns)
-    model = req.get("model") or review_model(ns)
-    if model not in {m for opts in ns["MODEL_OPTIONS"].values() for m in opts}:
+    model = req.get("model") or config.ASSIST_MODEL or review_model(ns)             # the person's request, then the server setting, then the notebook
+    if req.get("model") and model not in {m for opts in ns["MODEL_OPTIONS"].values() for m in opts}:
         raise ValueError(f"model not allowed: {model}")
     outline_ids = [i for i in order if by[i]["page"] in {by[x]["page"] for x in ids}]
     prompt = prompts.load("assist.txt").replace("{tags}", ns["TAG_GRAMMAR"]).replace("{note}", note)
     ns["set_stage"]("review", "assist")
-    raw = ns["_or_chat"](model, _assist_content(ns, prompt, by, ids, outline_ids, _history_text(d)), max_tokens=6000)
-    print(f"assist {d.name} {ids}: {raw[:1500]!r}")
+    scope = _scope(note)
+    with_page = scope == "other" or any(not ns["_bn"](by[i]) for i in ids)      # a block without a box has no crop: send the page
+    t0 = time.time()
+    content = _assist_content(ns, prompt, by, ids, outline_ids, _context_text(d, by, ids), with_page)
+    size = sum(len(by[i].get("formatted_text") or "") for i in ids)
+    max_tokens = config.ASSIST_MAX_TOKENS or min(8000, 1500 + 2 * size)             # room to write the blocks back: Hindi and other scripts need about a token per character
+    t1 = time.time()
+    raw, finish = _chat_fast(ns, model, content, max_tokens)
+    t2 = time.time()
+    print(f"assist {d.name} {ids}: scope={scope} page={with_page} images={sum(c.get('type') == 'image_url' for c in content)} "
+          f"prompt_chars={len(content[0]['text'])} max_tokens={max_tokens} finish={finish} prepare={t1 - t0:.1f}s model={t2 - t1:.1f}s answer={raw[:1500]!r}")
+    if finish == "length":
+        raise ValueError("The model's answer was cut off because the blocks are long. Select fewer blocks (or a smaller part of the page) and try again.")
     reply, actions = _parse_assist(raw)
 
     sel, outline = set(ids), set(outline_ids)
     cards, skipped, used, removed = [], [], set(), set()
     pending_inserts = []
 
+    keymap = {_key(i): i for i in order}
+    merged_into = {_key(a["block_id"]): host for host in order for a in (by[host].get("merged_from") or []) if a["block_id"] != host}
+
+    def pick(x):
+        k = _key(x)
+        if k in keymap:
+            return keymap[k]
+        if k in merged_into:
+            raise ValueError(f"{x} no longer exists: it was merged into {_lab(merged_into[k])}")
+        raise ValueError(f"{x or 'an id'} is not a block of this document")
+
     def skip(what, why):
         skipped.append({"id": what, "reason": why})
+
+    # a replacement is an edit: "delete this block and add a new one" would lose the block's place on the page
+    dels = [a for a in actions if a["type"] == "delete"]
+    ins = [a for a in actions if a["type"] == "insert"]
+    if len(ins) == 1 and dels:
+        try:
+            gone = [pick(x) for a in dels for x in re.split(r"[,\s]+", (a["attrs"].get("ids") or a["attrs"].get("id") or "").strip()) if x]
+        except ValueError:
+            gone = []
+        if len(gone) == 1 and gone[0] in sel and not by[gone[0]].get("is_picture"):
+            actions = [a for a in actions if a not in dels and a is not ins[0]] + [{"type": "edit", "attrs": {"id": gone[0]}, "body": ins[0]["body"]}]
 
     def card(kind, title, involved, before, after, events, warn=None, label=None, ref=None):
         first = [by[i] for i in involved]
@@ -532,26 +792,31 @@ def assist(job_dir, req):
         t, at = a["type"], a["attrs"]
         try:
             if t == "edit":
-                i = (at.get("id") or "").strip()
-                if i not in sel: raise ValueError(f"{i or 'an id'} is not one of the selected blocks")
+                i = pick(at.get("id"))
+                if i not in sel: raise ValueError(f"{_lab(i)} is not selected; select it first")
                 if i in used: raise ValueError("already changed by another action")
-                if by[i].get("is_picture"): raise ValueError("a picture has no text to edit; use Re-read")
                 new, old = _clean_markup(a["body"]), by[i].get("formatted_text") or ""
+                fresh = bool(by[i].get("is_picture")) or not old.strip()           # a picture or an empty block read from its crop: the words are new by design
                 if new.strip() == old.strip(): raise ValueError("the model found nothing to change")
+                if scope == "layout" and not fresh and not _same_words(new, old): raise ValueError("this was a layout request but the model changed the words, so it was not offered")
                 used.add(i)
-                card("edit", _lab(i), [i], old, new, [{"op": "set_fields", "block": i, "fields": {"formatted_text": new}}],
-                     warn=None if _same_words(new, old) else "The words changed. Check Compare before accepting.", label="changed")
+                fields = {"formatted_text": new}
+                if by[i].get("is_picture"):
+                    fields.update(is_picture=False, bodhan_type="Text")
+                card("edit", _lab(i), [i], old, new, [{"op": "set_fields", "block": i, "fields": fields}],
+                     warn=None if fresh or _same_words(new, old) else "The words changed. Check Compare before accepting.", label="read from image" if fresh else "changed")
+                cards[-1]["fields"] = fields
             elif t == "merge":
-                mids = sorted({x.strip() for x in (at.get("ids") or "").split(",") if x.strip()}, key=lambda x: order.index(x) if x in order else 10 ** 9)
+                mids = sorted({pick(x) for x in re.split(r"[,\s]+", (at.get("ids") or "").strip()) if x}, key=order.index)
                 bad = [x for x in mids if x not in sel]
-                if len(mids) < 2: raise ValueError("a merge needs at least two blocks")
-                if bad: raise ValueError(f"{', '.join(bad)} is not one of the selected blocks")
+                if len(mids) < 2: raise ValueError("a merge needs at least two different blocks (a block that shows parts= is already merged)")
+                if bad: raise ValueError(f"{', '.join(_lab(x) for x in bad)} is not selected; select it first")
                 if used & set(mids): raise ValueError("a block is already used by another action")
                 if any(by[x].get("is_picture") for x in mids): raise ValueError("a picture cannot be merged into text")
                 new = _clean_markup(a["body"])
                 old = "\n".join(by[x].get("formatted_text") or "" for x in mids)
                 used |= set(mids); removed |= set(mids[1:])
-                fields = {"formatted_text": new, "merged_from": [at_ for x in mids for at_ in _atoms(by[x])]}
+                fields = {"formatted_text": new}
                 here = [by[x] for x in mids if by[x]["page"] == by[mids[0]]["page"]]      # the box grows to cover every piece on the first block's page
                 boxes = [ns["_bn"](b_) for b_ in here]
                 if all(boxes):
@@ -560,30 +825,39 @@ def assist(job_dir, req):
                     W, H = pg.width * ns["DPI"] / 72, pg.height * ns["DPI"] / 72
                     fields.update(bbox_norm=[round(v, 6) for v in u], bbox_xyxy=[u[0] * W, u[1] * H, u[2] * W, u[3] * H])
                 card("merge", "Merge " + " + ".join(_lab(x) for x in mids), mids, old, new,
-                     [{"op": "set_fields", "block": mids[0], "fields": fields}, {"op": "delete", "blocks": mids[1:]}],
+                     [{"op": "merge_blocks", "ids": mids, "fields": fields}],
                      warn=None if _same_bag(new, old) else "The merged words differ from the original blocks. Check Compare before accepting.", label="merge")
+            elif t == "unwrap":
+                i = pick(at.get("id"))
+                if i not in sel: raise ValueError(f"{_lab(i)} is not selected; select it first")
+                if i in used: raise ValueError("already changed by another action")
+                old = by[i].get("formatted_text") or ""
+                if by[i].get("is_picture") or not re.search(r"<TABLE\b", old, re.I): raise ValueError(f"{_lab(i)} has no table")
+                new = _unwrap_all(old) if str(at.get("all", "")).lower() in ("1", "true", "yes") else _unwrap_outer(old)
+                if not new or not _same_words(new, old): raise ValueError("the outline could not be removed without touching the words")
+                used.add(i)
+                card("edit", _lab(i), [i], old, new, [{"op": "set_fields", "block": i, "fields": {"formatted_text": new}}], label="table outline removed")
+                cards[-1]["fields"] = {"formatted_text": new}
             elif t == "split":
-                i = (at.get("id") or "").strip()
-                if i not in sel: raise ValueError(f"{i or 'an id'} is not one of the selected blocks")
+                i = pick(at.get("id"))
+                if i not in sel: raise ValueError(f"{_lab(i)} is not selected; select it first")
                 if i in used: raise ValueError("already changed by another action")
                 atoms = by[i].get("merged_from") or []
-                if len(atoms) < 2 or atoms[0]["block_id"] != i: raise ValueError(f"{_lab(i)} was not made by merging, so there is nothing to split")
-                taken = [x["block_id"] for x in atoms[1:] if x["block_id"] in by]
+                if len(atoms) < 2: raise ValueError(f"{_lab(i)} was not made by merging, so there is nothing to split")
+                taken = [x["block_id"] for x in atoms if x["block_id"] in by]
                 if taken: raise ValueError(f"{', '.join(_lab(x) for x in taken)} already exists")
                 used.add(i)
-                back = {k: atoms[0].get(k) for k in ("formatted_text", "bbox_norm", "bbox_xyxy", "bodhan_type")}
                 card("split", f"Split {_lab(i)} back into {len(atoms)} blocks", [i], by[i].get("formatted_text") or "",
-                     "\n".join(x.get("formatted_text") or "" for x in atoms),
-                     [{"op": "set_fields", "block": i, "fields": {**back, "merged_from": None}}, {"op": "add_atoms", "after": i, "atoms": atoms[1:]}], label="split")
+                     "\n".join(x.get("formatted_text") or "" for x in atoms), [{"op": "split_block", "id": i}], label="split")
             elif t == "insert":
-                after = (at.get("after") or "").strip()
-                if after not in outline: raise ValueError(f"{after or 'an id'} is not a block on these pages")
+                after = pick(at.get("after"))
+                if after not in outline: raise ValueError(f"{_lab(after)} is not on the selected pages")
                 pending_inserts.append((after, _clean_markup(a["body"])))
             elif t == "delete":
-                dids = [x.strip() for x in (at.get("ids") or at.get("id") or "").split(",") if x.strip()]
+                dids = [pick(x) for x in re.split(r"[,\s]+", (at.get("ids") or at.get("id") or "").strip()) if x]
                 if not dids: raise ValueError("no block named")
                 for x in dids:
-                    if x not in sel: raise ValueError(f"{x} is not one of the selected blocks")
+                    if x not in sel: raise ValueError(f"{_lab(x)} is not selected; select it first")
                     if x in used: raise ValueError(f"{_lab(x)} is already used by another action")
                 for x in dids:
                     used.add(x); removed.add(x)

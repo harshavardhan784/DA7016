@@ -33,28 +33,27 @@ The text sent to the model lives in plain files in `C:\app\data\prompts\`, creat
 - `assist.txt` is the prompt of the one assistant on the screen (any request: fix, merge blocks, split a merge, add a table, check against the image, delete). Keep `{note}` and `{tags}` and the answer format (`<REPLY>` and `<ACTION type="edit|merge|split|insert|delete">`), which the server reads.
 - `default_instruction.txt`, `fix_formatting.txt` and `reread_hint.txt` are no longer used by the screen. They remain for the API shortcuts (`mode` format / reread) and for `python -m ocr.smoke`.
 
-The assistant remembers the session: the last six requests with what was accepted or rejected (read from `data\jobs\<job>\proposals`), and, on a merged block, the pieces it was made from.
+The assistant remembers each block: what was asked and decided about it is kept on the block itself, a merged block (new name, for example `B1_B2`) carries the context of its pieces, and requests you rejected are read from `data\jobs\<job>\proposals`.
 
 Edit a file in Notepad: the next request uses it, with no restart. If a file loses a required placeholder, the built-in wording is used and a warning goes to `ops.log`.
 To return to the built-in wording, delete the file. `C:\app\ocr\intent.py` only serves the API shortcuts above.
 If you updated from an older version, delete the old prompt files once: `Remove-Item C:\app\data\prompts\*.txt` (new `assist.txt` is created on first use).
 
-## B. Let in every Gmail account (run once)
+## B. Change who can sign in (run when needed)
 
-    (Get-Content C:\app\start.bat) -replace "^set ALLOWED_EMAILS=", "set ALLOWED_DOMAIN=gmail.com`r`nset ALLOWED_EMAILS=" | Set-Content C:\app\start.bat -Encoding ASCII
+Only the emails on the `ALLOWED_EMAILS` line of `C:\app\start.bat` can sign in. To change them, put the new address there and restart
+(several addresses are separated by commas, without spaces):
+
+    (Get-Content C:\app\start.bat) -replace '^set ALLOWED_EMAILS=.*$', 'set ALLOWED_EMAILS=you@example.com' | Set-Content C:\app\start.bat -Encoding ASCII
     Get-Content C:\app\start.bat
     Get-Process python -ErrorAction SilentlyContinue | Stop-Process -Force
     Start-ScheduledTask -TaskName OCR-App
 
-The second line shows the file: there must be a `set ALLOWED_DOMAIN=gmail.com` line above the `python` line. Running the first line twice
-adds a duplicate line, which is harmless. (Re-running `go_public.ps1` also lets you set this, in its fourth question.)
+The second line shows the file so you can check it. (Re-running `go_public.ps1` also lets you set this, in its third question.)
+While the Google app is in Testing, the address must also be listed as a test user in the Google console ("Audience", Google Auth Platform).
 
-Google must allow it as well. In the Google console open "Audience" (Google Auth Platform) and choose **Publish app**. While the
-app is in Testing, only your listed test users can sign in, whatever the server says.
-
-Anyone with a Gmail account can then use your OpenRouter and Bodhan credit. Each person is limited to **100 pages per 24 hours**
-(`USER_DAILY_PAGES`). To change it, add a line such as `set USER_DAILY_PAGES=300` above the `python` line in `C:\app\start.bat`
-(0 turns the limit off), then restart as above. A single PDF is limited to 20 pages (`MAX_PAGES`) and 50 MB (`MAX_UPLOAD_MB`).
+There is no limit on pages or on how much the allowed person uses the app. One PDF is limited to 50 MB (`MAX_UPLOAD_MB`) and one
+pipeline run to one hour (`JOB_TIMEOUT`).
 
 ## C. First-time setup of a new server
 
@@ -66,7 +65,7 @@ Anyone with a Gmail account can then use your OpenRouter and Bodhan credit. Each
 
        powershell -ExecutionPolicy Bypass -File C:\app\go_public.ps1
 
-   It asks for the domain, the Client ID, the allowed emails and an optional mail domain; it installs Caddy (HTTPS), opens the ports,
+   It asks for the domain, the Client ID and the allowed email(s); it installs Caddy (HTTPS), opens the ports,
    and starts the app and Caddy at every boot. Restart the server once to prove it.
 
 ## If something is wrong

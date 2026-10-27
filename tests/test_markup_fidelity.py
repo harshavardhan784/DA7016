@@ -11,7 +11,7 @@ from docx import Document
 from docx.table import Table
 from docx.text.paragraph import Paragraph
 
-from ocr import nb
+from pipeline import runtime as nb
 
 OUT = Path(__file__).resolve().parent.parent / "web_src" / "tests" / "roundtrip.out.json"
 CORPUS = Path(__file__).resolve().parent.parent / "web_src" / "tests" / "corpus.json"
@@ -64,15 +64,29 @@ def para(p):
             "tabs": [t.position for t in pf.tab_stops], "runs": [tuple(x) for x in runs]}
 
 
+def cell_desc(tc, doc):
+    """Everything in a cell, in order: its paragraphs and any table nested in it."""
+    out = []
+    for el in tc.iterchildren():
+        if el.tag.endswith("}p"):
+            out.append(("p", para(Paragraph(el, doc))))
+        elif el.tag.endswith("}tbl"):
+            out.append(("t",) + table_desc(Table(el, doc), doc))
+    return out
+
+
+def table_desc(t, doc):
+    rows = [[(tc.grid_span, cell_desc(tc, doc)) for tc in row._tr.tc_lst] for row in t.rows]
+    return (t.style.name if t.style is not None else None, t.alignment, len(t.columns), rows)
+
+
 def describe(doc):
     out = []
     for el in doc.element.body.iterchildren():
         if el.tag.endswith("}p"):
             out.append(("p", para(Paragraph(el, doc))))
         elif el.tag.endswith("}tbl"):
-            t = Table(el, doc)
-            rows = [[(c.grid_span, [para(p) for p in Paragraph_list(c, doc)]) for c in row._tr.tc_lst] for row in t.rows]
-            out.append(("t", t.style.name if t.style is not None else None, t.alignment, len(t.columns), rows))
+            out.append(("t",) + table_desc(Table(el, doc), doc))
     return out
 
 

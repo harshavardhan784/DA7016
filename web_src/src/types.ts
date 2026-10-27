@@ -21,7 +21,7 @@ export interface Proposal {
   blocks: ProposalBlock[]; status: 'ready' | 'closed'
   skipped?: { id: string; reason: string }[]
   message?: string; choices?: Choice[]; understood?: string; alternatives?: Choice[]; block_ids?: string[]
-  usage: { calls: number; tok_in: number; tok_out: number; cost: number }
+  usage: { calls: number; tok_in: number; tok_out: number; cost: number; seconds?: number }
   new_block?: { block_id: string; page: number; bbox_norm: number[] }; index?: number
 }
 export interface JobStatus {
@@ -29,4 +29,4 @@ export interface JobStatus {
   filename: string; pages: number; created: number; started?: number; finished?: number; error?: string
   log_tail?: string; queue_size?: number
 }
-export interface AppConfig { auth: boolean; google_client_id: string; max_mb: number; max_pages: number }
+export interface AppConfig { auth: boolean; google_client_id: string; max_mb: number }

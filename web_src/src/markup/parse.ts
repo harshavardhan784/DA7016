@@ -50,6 +50,7 @@ function tree(text: string): N {
       for (let k = stack.length - 1; k > 0; k--) if (stack[k].tag === name) { stack.length = k; break }
       continue
     }
+    if (name === 'P' && stack[stack.length - 1].tag === 'P') stack.length -= 1     // a <P> inside an open <P>: the writer forgot </P> (the builder does the same)
     const node: N = { tag: name, attrs: parseAttrs(m[3]), children: [] }
     stack[stack.length - 1].children.push(node)
     if (VOID.has(name) || m[4]) continue
@@ -166,10 +167,14 @@ function cell(c: N, header: boolean): PM {
   void header
   const paras = c.children.filter((k): k is N => isNode(k) && ['P', 'ITEM', 'OPTION'].includes(k.tag))
   let content: PM[]
-  if (paras.length) {
-    if (c.children.some((k) => (typeof k === 'string' ? !blank(k) : !['P', 'ITEM', 'OPTION'].includes(k.tag)))) {
-      throw new Unsupported('text next to paragraphs inside a cell')       // the builder ignores it
-    }
+  // the builder's _cell_is_complex: options, a list, a question wrapper, or text/tags beside paragraphs go through the general block renderer
+  const complex = c.children.some((k) => isNode(k) && ['OPTIONS', 'LIST', 'TABLE', 'QUESTION'].includes(k.tag))
+    || (paras.length > 0 && c.children.some((k) => (typeof k === 'string' ? !blank(k) : !['P', 'ITEM', 'OPTION'].includes(k.tag))))
+  if (complex) {
+    const out: PM[] = []
+    blocks(c.children, out)
+    content = out.length ? out : [para({}, [])]
+  } else if (paras.length) {
     content = paras.map((p) => para(p.attrs, p.children))
   } else {
     content = [para({}, c.children)]

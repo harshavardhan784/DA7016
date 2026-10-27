@@ -5,8 +5,7 @@ import pymupdf
 import pytest
 import requests
 
-from ocr import store
-from ocr import config
+from ocr import config, store
 
 def _block(bid, page, bn, typ, markup):
     return {"block_id": bid, "page": page, "bbox_xyxy": None, "bbox_norm": bn, "bodhan_type": typ,

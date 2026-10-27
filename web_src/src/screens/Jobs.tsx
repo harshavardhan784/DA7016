@@ -34,7 +34,7 @@ export function Jobs({ cfg, email, onOpen, onSignOut }: { cfg: AppConfig; email:
       </header>
       <div className={`drop${over ? ' over' : ''}`} onDragOver={(e) => { e.preventDefault(); setOver(true) }} onDragLeave={() => setOver(false)}
         onDrop={(e) => { e.preventDefault(); setOver(false); void send(e.dataTransfer.files[0]) }}>
-        <p style={{ margin: '0 0 12px' }}>Drop a PDF here, or choose one. Up to {cfg.max_pages} pages and {cfg.max_mb} MB.</p>
+        <p style={{ margin: '0 0 12px' }}>Drop a PDF here, or choose one. Up to {cfg.max_mb} MB.</p>
         <input ref={input} type="file" accept="application/pdf" className="sr" aria-label="Choose a PDF" onChange={(e) => { void send(e.target.files?.[0]); e.target.value = '' }} />
         <button className="btn primary" disabled={sending} onClick={() => input.current?.click()}>{sending ? 'Uploading…' : 'Choose a PDF'}</button>
         {msg && <p className="err" role="alert" style={{ marginBottom: 0 }}>{msg}</p>}

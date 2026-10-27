@@ -2,38 +2,57 @@ import json
 
 import pytest
 
-from tests.conftest import BLOCKS, _block
-from ocr import store
-from ocr import nb
-from ocr import ops
-from ocr import prompts
+from conftest import BLOCKS, _block
+from ocr import ops, prompts, store
+from pipeline import runtime as nb
 
 
-# ── notebook loader ───────────────────────────────────────────────────────
-def test_every_role_matches_one_cell():
-    for role in nb.ROLES:
-        assert nb.cell(role)
+# ── pipeline loader (stage files in pipeline/) ────────────────────────────
+def test_every_role_has_a_stage_file():
+    for role in nb.STAGES:
+        assert nb.stage(role) and nb.stage_path(role).name == nb.STAGES[role]
+    assert set(nb.PIPELINE) | {"final"} == set(nb.STAGES)
 
 
 def test_input_patch_touches_only_two_lines():
-    raw, patched = nb.cell("config"), nb.source("config")
+    raw, patched = nb.stage("config"), nb.source("config")
     diff = [(a, b) for a, b in zip(raw.split("\n"), patched.split("\n")) if a != b]
     assert len(diff) == 2 and diff[0][1].startswith("PDF_PATH") and diff[1][1].startswith("PAGES")
 
 
-def test_run_script_has_snapshot_before_final_cell():
+def test_run_script_has_snapshot_before_final_stage():
     s = nb.run_script()
     compile(s, "run", "exec")
     assert s.index("blocks_pre.json") < s.index("ordered_blocks = fix_blocks(ordered_blocks)")
+    assert [s.index(f"# ===== stage: {r} =====") for r in nb.PIPELINE] == sorted(s.index(f"# ===== stage: {r} =====") for r in nb.PIPELINE)
 
 
-def test_changed_notebook_fails_loudly(tmp_path):
+def test_a_missing_stage_file_fails_loudly(monkeypatch, tmp_path):
+    monkeypatch.setattr(nb, "HERE", tmp_path)
+    with pytest.raises(nb.PipelineError, match="missing"):
+        nb.stage("single")
+    with pytest.raises(nb.PipelineError, match="no stage file"):
+        nb.stage("nope")
+
+
+# role -> a line that only that notebook cell has (how the stage files were cut from the notebook)
+_MARK = {"config": "# ── INPUT ──", "metrics": "def set_stage(", "helpers": "def preprocess_page(", "grammar": "TAG_GRAMMAR",
+         "utils": "def _or_chat(", "docx_a": "def build_docx_with_blocks(", "docx_b": "def _latex_to_omml(", "fixers": "def fix_blocks(",
+         "router": "ROUTE, ROUTE_INFO = decide_route()", "digital": "def run_digital_english(", "single": "def run_single_gemini(",
+         "indic_ocr": "def _stage1_page(", "indic_fmt": "def _format_chunk(", "final": "ordered_blocks = fix_blocks(ordered_blocks)"}
+
+
+def test_stage_files_are_the_notebook_cells_unchanged():
+    """The stage files are what runs; the notebook is the reference. This fails if the notebook is edited and the stage files are not."""
+    import re
     book = json.loads(nb.NOTEBOOK.read_text(encoding="utf-8"))
-    book["cells"] = [c for c in book["cells"] if "def run_single_gemini" not in "".join(c["source"])]
-    p = tmp_path / "x.ipynb"
-    p.write_text(json.dumps(book), encoding="utf-8")
-    with pytest.raises(nb.NotebookError, match="single"):
-        nb.cell("single", p)
+    cells = ["\n".join(l for l in "".join(c["source"]).split("\n") if not re.match(r"^\s*(!|%%?[A-Za-z])", l))
+             for c in book["cells"] if c["cell_type"] == "code"]
+    for role, mark in _MARK.items():
+        hits = [c for c in cells if re.search(r"(?m)^\s*" + re.escape(mark), c)]
+        assert len(hits) == 1, (role, len(hits))
+        body = re.sub(r"\A(# .*\n){2}", "", nb.stage(role))
+        assert body == hits[0] + "\n", f"stage file for '{role}' differs from the notebook cell"
 
 
 # ── history ───────────────────────────────────────────────────────────────

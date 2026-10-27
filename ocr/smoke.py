@@ -10,9 +10,7 @@ from pathlib import Path
 
 import pymupdf
 
-from . import store
-from . import config
-from . import ops
+from . import config, ops, store
 
 
 def main(pdf):

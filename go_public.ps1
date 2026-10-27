@@ -13,16 +13,14 @@ Write-Host "You need: a domain name that points at this server, and a Google sig
 Write-Host "Settings you set by hand in C:\app\start.bat are replaced by your answers here."
 Write-Host ""
 
-$domain = (Ask "1/4  Domain name (for example mypdfocr.duckdns.org, without https://)").ToLower()
-$client = Ask "2/4  Google Client ID (ends with .apps.googleusercontent.com)"
-$emails = (Ask "3/4  Emails allowed to sign in, separated by commas (Enter to skip if you allow a whole mail domain next)").ToLower() -replace '\s', ''
-$mail   = (Ask "4/4  Also let in everyone with this mail domain, for example gmail.com (Enter for nobody extra)").ToLower() -replace '\s', ''
+$domain = (Ask "1/3  Domain name (for example mypdfocr.duckdns.org, without https://)").ToLower()
+$client = Ask "2/3  Google Client ID (ends with .apps.googleusercontent.com)"
+$emails = (Ask "3/3  Email allowed to sign in (several can be separated by commas)").ToLower() -replace '\s', ''
 
 if ($domain -notmatch '^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$') { throw "That does not look like a domain name: $domain" }
 if ($client -notmatch '^[0-9A-Za-z._-]+\.apps\.googleusercontent\.com$') { throw "That does not look like a Google Client ID: $client" }
 if ($emails -and $emails -notmatch '^[^@,;&|<>^%"\s]+@[^@,;&|<>^%"\s]+(,[^@,;&|<>^%"\s]+@[^@,;&|<>^%"\s]+)*$') { throw "Emails must look like a@x.com,b@y.com (no spaces or odd symbols)" }
-if ($mail -and $mail -notmatch '^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$') { throw "That does not look like a mail domain: $mail" }
-if (-not $emails -and -not $mail) { throw "Give at least one email or one mail domain, otherwise nobody can sign in." }
+if (-not $emails) { throw "Give at least one email, otherwise nobody can sign in." }
 
 Step "Checking that the name points at this server"
 $mine = (Invoke-RestMethod -Uri 'https://checkip.amazonaws.com' -TimeoutSec 15).ToString().Trim()
@@ -39,7 +37,6 @@ if ($seen -contains $mine) {
 Step "Saving the settings"
 [Environment]::SetEnvironmentVariable('GOOGLE_CLIENT_ID', $client, 'Machine')
 [Environment]::SetEnvironmentVariable('ALLOWED_EMAILS', $emails, 'Machine')
-[Environment]::SetEnvironmentVariable('ALLOWED_DOMAIN', $mail, 'Machine')
 [Environment]::SetEnvironmentVariable('AUTH_DISABLED', $null, 'Machine')
 foreach ($k in 'OPENROUTER_API_KEY', 'BODHAN_OCR_API_KEY') {
     if (-not [Environment]::GetEnvironmentVariable($k, 'Machine')) { Write-Host "WARNING: $k is not set on this machine. Review and Re-read will fail until it is (setx $k `"...`" /M)." -ForegroundColor Yellow }
@@ -54,7 +51,6 @@ cd /d $app
 if not exist $app\data mkdir $app\data
 set AUTH_DISABLED=
 set GOOGLE_CLIENT_ID=$client
-set ALLOWED_DOMAIN=$mail
 set ALLOWED_EMAILS=$emails
 "$py" -m uvicorn ocr.api:app --host 127.0.0.1 --port 8000 >> $app\data\app.log 2>&1
 "@

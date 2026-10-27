@@ -9,8 +9,6 @@ import sys
 import tempfile
 from pathlib import Path
 
-from ocr import api, config, ops
-
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 tmp = Path(tempfile.mkdtemp(prefix="ocr_ui_"))
 os.environ.update(OCR_DATA=str(tmp), AUTH_DISABLED="1", OPENROUTER_API_KEY="x", BODHAN_OCR_API_KEY="x")
@@ -21,7 +19,7 @@ import pymupdf
 import requests
 import uvicorn
 
-from ocr import store
+from ocr import api, config, ops, store
 
 W, H = 595, 842
 b = lambda r: [round(r[0] / W, 4), round(r[1] / H, 4), round(r[2] / W, 4), round(r[3] / H, 4)]

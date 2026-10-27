@@ -44,7 +44,7 @@ def read_session(token):
 
 def allowed(email):
     email = email.lower()
-    return "*" in config.ALLOWED_EMAILS or email in config.ALLOWED_EMAILS or bool(config.ALLOWED_DOMAIN and email.endswith("@" + config.ALLOWED_DOMAIN))
+    return "*" in config.ALLOWED_EMAILS or email in config.ALLOWED_EMAILS
 
 
 def verify_google(credential):
